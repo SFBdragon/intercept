@@ -8,6 +8,7 @@ macro_rules! retifsome {
    };
 }
 
+
 // ---------- Point & Line ---------- //
 
 #[inline]
@@ -62,84 +63,37 @@ pub fn line_line_query(a1: Vector2<f64>, a2: Vector2<f64>, b1: Vector2<f64>, b2:
 }
 
 
-// Circle
-
 #[derive(Clone, Copy, Debug)]
 pub struct Circle {
    pub rad: f64,
    pub pos: Vector2<f64>,
 }
-
 impl Circle {
    #[inline]
-   pub fn new(rad: f64, pos: Vector2<f64>) -> Circle {
-      Circle {
-         rad: f64::abs(rad),
-         pos
-      }
-   }
-   #[inline]
-   pub fn new_raw(rad: f64, posx: f64, posy: f64) -> Circle {
+   pub fn new(rad: f64, posx: f64, posy: f64) -> Circle {
       Circle {
          rad: f64::abs(rad),
          pos: cgmath::vec2(posx, posy),
       }
    }
+   #[inline]
+   fn translate(self, offset: Vector2<f64>) -> Circle {
+      Circle { pos: self.pos + offset, rad: self.rad }
+   }
 
    #[inline]
-   pub fn point_test(self, a: Vector2<f64>) -> bool {
-      //! Return whether a circle-point intersect occurs.
-      self.rad * self.rad <= (self.pos.x - a.x) * (self.pos.x - a.x) + (self.pos.y - a.y) * (self.pos.y - a.y)
-   }
-   pub fn line_test(self, a: Vector2<f64>, b: Vector2<f64>) -> bool {
-      //! Returns whether a circle-line intersection occurs.
-      let dx = b.x - a.x;
-      let dy = b.y - a.y;
-      let mag = dx * dx + dy * dy;
-      let u = (self.pos.x - a.x) * dx + (self.pos.y - a.y) * dy;
-      if u < 0.0 || u > mag { return false }
-      let u = u / mag;
-
-      let distx = self.pos.x - (a.x + u * dx);
-      let disty = self.pos.y - (b.y + u * dy);
-      self.rad * self.rad >= distx * distx + disty * disty
-   }
-   pub fn line_query(self, a: Vector2<f64>, b: Vector2<f64>) -> Option<Vector2<f64>> {
-      //! Optionally returns entrypoint of `a`->`b` through `self`.
-      let diff = a - self.pos;
-      let unit = (b - a).normalize();
-      let dot = unit.dot(diff) as f64;
-      let x = dot * dot - (diff.magnitude2() - self.rad * self.rad);
-
-      if x < 0.0 {
-         None
-      } else if x == 0.0 {
-         Some(a + unit.mul_element_wise(-dot))
-      } else {
-         let d = -dot - x.sqrt();
-         if d <= 1.0 && d >= 0.0 {
-            Some(a + unit.mul_element_wise(d))
-         } else {
-            None
-         }
-      }
-   }
-   #[inline]
-   pub fn circle_test(self, c: Circle) -> bool {
-      //! Return whether a circle-circle intersect occurs.
-      (self.rad - c.rad) * (self.rad - c.rad) <= (self.pos - c.pos).magnitude2()
+   pub fn bounding_test(self, aabb: &AABB) -> bool {
+      //! Performs an AABB test between `aabb` and the circle's bounding box.
+      aabb.min.x <= self.rad + self.pos.x && aabb.max.x >= self.pos.x - self.rad 
+      && aabb.min.y <= self.pos.y + self.rad && aabb.max.y >= self.pos.y - self.rad
    }
 }
-
-
-// ---------- AABB ---------- //
 
 #[derive(Debug, Clone, Copy)]
 pub struct AABB {
    pub min: Vector2<f64>,
    pub max: Vector2<f64>,
 }
-
 impl AABB {
    #[inline]
    pub fn new(minx: f64, miny: f64, maxx: f64, maxy: f64) -> AABB {
@@ -169,43 +123,6 @@ impl AABB {
    }
 
    #[inline]
-   pub fn point_test(self, point: Vector2<f64>) -> bool {
-      //! Returns whether an AABB-point intersection occurs.
-      point.x >= self.min.x && point.x <= self.max.x && point.y >= self.min.y && point.y <= self.max.y
-   }
-   pub fn line_test(self, a: Vector2<f64>, b: Vector2<f64>) -> bool {
-      //! Returns whether an AABB-line intersection occurs.
-      // SAT tests (https://www.gamedev.net/forums/topic/338987-aabb---line-segment-intersection-test/)
-      let halfab = (b - a).mul_element_wise(0.5);  
-      let halfaabb = (self.max - self.min).mul_element_wise(0.5);    
-      let halfdiff = a + halfab - (self.min + self.max).mul_element_wise(0.5);
-      let abs_hd_x = f64::abs(halfab.x);
-      let abs_hd_y = f64::abs(halfab.y);
-      !( f64::abs(halfdiff.x) > halfaabb.x + abs_hd_x
-      || f64::abs(halfdiff.y) > halfaabb.y + abs_hd_y
-      || f64::abs(halfab.x * halfdiff.y - halfab.y * halfdiff.x) > halfaabb.x * abs_hd_y + halfaabb.y * abs_hd_x + 0.00001 )
-   }
-   pub fn line_query(self, a: Vector2<f64>, b: Vector2<f64>) -> Option<Vector2<f64>> {
-      //! Optionally returns entrypoint of `a`->`b` through `self`.
-      if a.x < self.min.x { // l/r tests
-         retifsome!(line_line_query(a, b, self.min, self.minx_maxy()));
-      } else if a.x > self.max.x {
-         retifsome!(line_line_query(a, b, self.min, self.minx_maxy()));
-      }
-      if a.y < self.min.y { // t/d tests
-         retifsome!(line_line_query(a, b, self.min, self.minx_maxy()));
-      } else if a.y > self.max.y {
-         retifsome!(line_line_query(a, b, self.min, self.minx_maxy()));
-      }
-      None
-   }
-   #[inline]
-   pub fn aabb_test(self, other: AABB) -> bool {
-      //! Returns whether an AABB-AABB intersection occurs.
-      self.min.x <= other.max.x && self.max.x >= other.min.x && self.min.y <= other.max.y && self.max.y >= other.min.y
-   }
-
-   #[inline]
    pub fn minx_maxy(self) -> Vector2<f64> {
       cgmath::vec2(self.min.x, self.max.y)
    }
@@ -214,23 +131,40 @@ impl AABB {
       cgmath::vec2(self.max.x, self.min.y)
    }
    #[inline]
-   pub fn translate(self, offset: Vector2<f64>) -> AABB {
+   fn translate(self, offset: Vector2<f64>) -> AABB {
       AABB { min: self.min + offset, max: self.max + offset }
+   }
+   
+   #[inline]
+   pub fn closest_vert(self, norm: Vector2<f64>) -> Vector2<f64> {
+      //! Returns the vertex of the AABB that projects the furthest back from the normal (normalization not required).
+      if norm.x >= 0.0 {
+         if norm.y >= 0.0 {
+            self.min
+         } else {
+            self.minx_maxy()
+         }
+      } else {
+         if norm.y >= 0.0 {
+            self.maxx_miny()
+         } else {
+            self.max
+         }
+      }
    }
 }
 
-
-// ---------- Poly ---------- //
-
+/// A 2D convex polygon, vertices arranged clockwise - tailed with a duplicate of the first, with unit-length normals - without duplication. 
 #[derive(Debug, Clone)]
 pub struct Poly {
+   pub aabb: AABB,
+   /// First vertex's duplicate tails. `verts.len() - 1 == norms.len()`
    pub verts: Vec<Vector2<f64>>,
+   /// Length equals actual vertex count. `verts.len() - 1 == norms.len()`
    pub norms: Vec<Vector2<f64>>,
-   pub center: Vector2<f64>
 }
-
 impl Poly {
-   /// `verts` must form a convex polygon.
+   /// `verts` must form a convex polygon. `verts` must not contain duplicate or interior vertices.
    pub fn new(verts: &[Vector2<f64>]) -> Poly {
       let len = verts.len();
       let mut index = 0;
@@ -266,71 +200,30 @@ impl Poly {
          order[index] = t;
       }
 
-      let mut ordered = Vec::with_capacity(len);
-      for i in 0..len { ordered.push(verts[order[i]]); }
-      Poly::new_from_wound(ordered)
+      let mut ordered_and_duped = Vec::with_capacity(len + 1);
+      for i in 0..len { ordered_and_duped.push(verts[order[i]]); }
+      ordered_and_duped.push(verts[order[0]]);
+      Poly::new_from_wound(ordered_and_duped)
    }
-   /// `verts` must form a convex polygon and must be pregiftwrapped clockwise.
+   /// `verts` must form a convex polygon, be wrapped clockwise, and must contain a duplicate of the first trailing vertex.
    pub fn new_from_wound(verts: Vec<Vector2<f64>>) -> Poly {
-      let len = verts.len();
+      let len = verts.len() - 1; // verts contains a duplicate trailing vertex
       let mut norms = Vec::with_capacity(len);
-      let mut center = cgmath::vec2(0.0, 0.0);
+      let (mut ix, mut iy, mut ax, mut ay) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
       for i in 0..len {
-         norms.push(cgmath::vec2(-(verts[(i+1) % len].y - verts[i].y), verts[(i+1) % len].x - verts[i].x).normalize());
-         center = center + verts[i];
+         norms.push(cgmath::vec2(-(verts[i+1].y - verts[i].y), verts[i+1].x - verts[i].x).normalize());
+         
+         if verts[i].x < ix { ix = verts[i].x; }
+         if verts[i].x > ax { ax = verts[i].y; }
+         if verts[i].y < iy { iy = verts[i].x; }
+         if verts[i].y > ay { ay = verts[i].y; }
       }
 
-      Poly { verts, norms, center: center.div_element_wise(len as f64) }
-   }
-   
-   pub fn point_test(&self, loc: Vector2<f64>) -> bool {
-      (0..self.verts.len()).all(|i| point_normal_test(loc, self.verts[i], self.norms[i]))
-   }
-   /// Returns whether an intersection occurs between the two polygons.
-   pub fn poly_test(&self, other: &Poly) -> bool {
-      let len1 = self.verts.len();
-      let len2 = other.verts.len();
-      'axes1: for i in 0..len1 { // seperating axis algorithm
-         let n = self.norms[i];
-         let max = n.dot(self.verts[i]) as f64;
-         for v in 0..len2 {
-            if max >= n.dot(other.verts[v]) {
-               continue 'axes1; // invalid axis if it does not seperate
-            }
-         }
-         return false // valid axis found
-      }
-      'axes2: for i in 0..len2 { // rewind logo problem necessitates both polys be verified
-         let n = other.norms[i];
-         let max = n.dot(other.verts[i]) as f64;
-         for v in 0..len1 {
-            if max >= n.dot(self.verts[v]) {
-               continue 'axes2; // invalid axis if it does not seperate
-            }
-         }
-         return false // valid axis found
-      }
-      true
+      Poly { aabb: AABB::new(ix, iy, ax, ay), verts, norms }
    }
 
-   /// Returns whether a line-polygon intersection occurs.
-   pub fn line_test(&self, a: Vector2<f64>, b: Vector2<f64>) -> bool {
-      let len = self.verts.len();
-      (0..len-1).any(|i| line_line_test(self.verts[i], self.verts[i+1], a, b)) 
-         || line_line_test(self.verts[len-1], self.verts[0], a, b)
-   }
-   /// Optionally returns entrypoint of `a`->`b` through `self`.
-   pub fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<Vector2<f64>> {
-      let len = self.verts.len();
-      for i in 0..len {
-         if point_normal_test(a, self.verts[i], self.norms[i]) {
-            retifsome!(line_line_query(a, b, self.verts[i], self.verts[(i+1)%len]));
-         }
-      }
-      None
-   }
-   
    pub fn translate(&mut self, offset: Vector2<f64>) {
+      self.aabb = self.aabb.translate(offset);
       for i in 0..self.verts.len() {
          self.verts[i] = self.verts[i] + offset;
       }
@@ -338,10 +231,11 @@ impl Poly {
 }
 
 
-// ---------- shape-shape inters ---------- //
+// ---------- Shape-Shape intersection tests ---------- //
 
-pub fn aabb_circle_test(AABB { min, max }: AABB, Circle { rad, pos }: Circle) -> bool {
-   if min.x <= rad + pos.x && max.x >= pos.x - rad && min.y <= pos.y + rad && max.y >= pos.y - rad {
+fn aabb_circle_test(&AABB { min, max }: &AABB, &Circle { rad, pos }: &Circle) -> bool {
+   let rad2 = rad + rad;
+   if min.x <= rad2 + pos.x && max.x >= pos.x - rad2 && min.y <= pos.y + rad2 && max.y >= pos.y - rad2 {
       if pos.x < min.x {
          if pos.y < min.y {
             return rad * rad >= (min - pos).magnitude2()
@@ -364,178 +258,297 @@ pub fn aabb_circle_test(AABB { min, max }: AABB, Circle { rad, pos }: Circle) ->
       false
    }
 }
-pub fn poly_aabb_test(poly: &Poly, poly_aabb: AABB, aabb: AABB) -> bool {
-   if aabb.aabb_test(poly_aabb) {
-      let aabb_verts = [aabb.min, aabb.max, aabb.minx_maxy(), aabb.maxx_miny()];
-      'axes1: for i in 0..poly.verts.len() { // seperating axis algorithm
+fn poly_aabb_test(poly: &Poly, aabb: &AABB) -> bool {
+   if aabb.aabb_test(&poly.aabb) {
+      for i in 0..poly.norms.len() {
          let n = poly.norms[i];
-         let max = n.dot(poly.verts[i]) as f64;
-         for v in aabb_verts.iter() {
-            if max >= n.dot(*v) {
-               continue 'axes1; // invalid axis if it does not seperate
-            }
+         let closest = aabb.closest_vert(n);
+         if n.dot(poly.verts[i]) > n.dot(closest) {
+            return false // valid seperating axis found
          }
-         return false // valid axis found
       }
       true // given the aabbs intersect, the polygon must have the seperating axis
    } else {
       false
    }
 }
-pub fn poly_circle_test(poly: &Poly, circle: Circle) -> bool {
-   let len = poly.verts.len();
+fn poly_circle_test(poly: &Poly, circle: &Circle) -> bool {
+   if !circle.bounding_test(&poly.aabb) {
+      return false
+   }
 
+   let len = poly.norms.len();
    // point tests
-   if (0..len).any(|i| circle.point_test(poly.verts[i])) { 
-      return true
+   if (0..len).any(|i| circle.point_test(poly.verts[i])) { return true }
+   // pseudo SAT tests
+   for i in 0..len {
+      let n = poly.norms[i];
+      let sa = n.dot(poly.verts[i]) as f64;
+      let proj = n.dot(circle.pos) as f64;
+      if sa >= proj {
+         continue; // axis does not seperate center
+      } else if sa + circle.rad >= proj { // if extended axis encompases center
+         // 0.0 <= x <= 1.0 if center is adjacent to the diff vector of the two relavent verts
+         // as the adjacent corners failed to intersect, failing this check means there is no intersection
+         let x = (poly.verts[i+1] - poly.verts[i]).dot(circle.pos) as f64;
+         if 0.0 <= x && x <= 1.0 {
+            continue;
+         }
+      }
+      return false
    }
-   // line tests
-   if (0..(len-1)).any(|i| circle.line_test(poly.verts[i], poly.verts[i+1])) || circle.line_test(poly.verts[len-1], poly.verts[0]) { 
-      return true
-   }
-   // check if circle center is within poly
-   (0..len).all(|i| point_normal_test(circle.pos, poly.verts[i], poly.norms[i]))
+   true
 }
 
+
+// ---------- Intersect ---------- //
+
+pub trait Intersect {
+   fn point_test(&self, point: Vector2<f64>) -> bool; // point test
+   fn line_test(&self, a: Vector2<f64>, b: Vector2<f64>) -> bool; // line intersection
+   fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<Vector2<f64>>; // line entrypoint
+
+   fn circle_test(&self, circle: &Circle) -> bool; // circle intersection
+   fn aabb_test(&self, aabb: &AABB) -> bool; // aabb intersection
+   fn poly_test(&self, poly: &Poly) -> bool; // poly intersection
+}
+
+impl Intersect for Circle {
+   #[inline]
+   fn point_test(&self, a: Vector2<f64>) -> bool {
+      //! Return whether a circle-point intersect occurs.
+      self.rad * self.rad <= (self.pos.x - a.x) * (self.pos.x - a.x) + (self.pos.y - a.y) * (self.pos.y - a.y)
+   }
+   fn line_test(&self, a: Vector2<f64>, b: Vector2<f64>) -> bool {
+      //! Returns whether a circle-line intersection occurs.
+      let dx = b.x - a.x;
+      let dy = b.y - a.y;
+      let mag = dx * dx + dy * dy;
+      let u = (self.pos.x - a.x) * dx + (self.pos.y - a.y) * dy;
+      if u < 0.0 || u > mag { return false }
+      let u = u / mag;
+
+      let distx = self.pos.x - (a.x + u * dx);
+      let disty = self.pos.y - (b.y + u * dy);
+      self.rad * self.rad >= distx * distx + disty * disty
+   }
+   fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<Vector2<f64>> {
+      //! Optionally returns entrypoint of `a`->`b` through `self`.
+      let diff = a - self.pos;
+      let unit = (b - a).normalize();
+      let dot = unit.dot(diff) as f64;
+      let x = dot * dot - (diff.magnitude2() - self.rad * self.rad);
+
+      if x < 0.0 {
+         None
+      } else if x == 0.0 {
+         Some(a + unit.mul_element_wise(-dot))
+      } else {
+         let d = -dot - x.sqrt();
+         if d <= 1.0 && d >= 0.0 {
+            Some(a + unit.mul_element_wise(d))
+         } else {
+            None
+         }
+      }
+   }
+   
+   #[inline]
+   fn circle_test(&self, c: &Circle) -> bool {
+      (self.rad - c.rad) * (self.rad - c.rad) <= (self.pos - c.pos).magnitude2()
+   }
+   #[inline]
+   fn aabb_test(&self, aabb: &AABB) -> bool {
+       aabb_circle_test(aabb, self)
+   }
+   #[inline]
+   fn poly_test(&self, poly: &Poly) -> bool {
+      poly_circle_test(poly, self)
+   }
+}
+
+impl Intersect for AABB {
+   #[inline]
+   fn point_test(&self, point: Vector2<f64>) -> bool {
+      //! Returns whether an AABB-point intersection occurs.
+      point.x >= self.min.x && point.x <= self.max.x && point.y >= self.min.y && point.y <= self.max.y
+   }
+   fn line_test(&self, a: Vector2<f64>, b: Vector2<f64>) -> bool {
+      //! Returns whether an AABB-line intersection occurs.
+      // SAT tests (https://www.gamedev.net/forums/topic/338987-aabb---line-segment-intersection-test/)
+      let halfab = (b - a).mul_element_wise(0.5);  
+      let halfaabb = (self.max - self.min).mul_element_wise(0.5);    
+      let halfdiff = a + halfab - (self.min + self.max).mul_element_wise(0.5);
+      let abs_hd_x = f64::abs(halfab.x);
+      let abs_hd_y = f64::abs(halfab.y);
+      !( f64::abs(halfdiff.x) > halfaabb.x + abs_hd_x
+      || f64::abs(halfdiff.y) > halfaabb.y + abs_hd_y
+      || f64::abs(halfab.x * halfdiff.y - halfab.y * halfdiff.x) > halfaabb.x * abs_hd_y + halfaabb.y * abs_hd_x + 0.00001 )
+   }
+   fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<Vector2<f64>> {
+      //! Optionally returns entrypoint of `a`->`b` through `self`.
+      if a.x < self.min.x { // l/r tests
+         retifsome!(line_line_query(a, b, self.min, self.minx_maxy()));
+      } else if a.x > self.max.x {
+         retifsome!(line_line_query(a, b, self.min, self.minx_maxy()));
+      }
+      if a.y < self.min.y { // t/d tests
+         retifsome!(line_line_query(a, b, self.min, self.minx_maxy()));
+      } else if a.y > self.max.y {
+         retifsome!(line_line_query(a, b, self.min, self.minx_maxy()));
+      }
+      None
+   }
+
+   #[inline]
+   fn circle_test(&self, circle: &Circle) -> bool {
+       aabb_circle_test(self, circle)
+   }
+   #[inline]
+   fn aabb_test(&self, other: &AABB) -> bool {
+      self.min.x <= other.max.x && self.max.x >= other.min.x && self.min.y <= other.max.y && self.max.y >= other.min.y
+   }
+   #[inline]
+   fn poly_test(&self, poly: &Poly) -> bool {
+      poly_aabb_test(poly, self)
+   }
+}
+
+impl Intersect for Poly {
+   fn point_test(&self, loc: Vector2<f64>) -> bool {
+      (0..self.norms.len()).all(|i| point_normal_test(loc, self.verts[i], self.norms[i]))
+   }
+   fn line_test(&self, a: Vector2<f64>, b: Vector2<f64>) -> bool {
+      //! Returns whether a line-polygon intersection occurs.
+      let len = self.norms.len();
+      (0..len).any(|i| line_line_test(self.verts[i], self.verts[i+1], a, b))
+   }
+   fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<Vector2<f64>> {
+      //! Optionally returns entrypoint of `a`->`b` through `self`.
+      let len = self.norms.len();
+      let line = b - a;
+      for i in 0..len {
+         if point_normal_test(a, self.verts[i], self.norms[i]) && self.norms[i].dot(line) > 0.0{
+            retifsome!(line_line_query(a, b, self.verts[i], self.verts[i+1]));
+         }
+      }
+      None
+   }
+
+   #[inline]
+   fn circle_test(&self, circle: &Circle) -> bool {
+      poly_circle_test(self, circle)
+   }
+   #[inline]
+   fn aabb_test(&self, aabb: &AABB) -> bool {
+      poly_aabb_test(self, aabb)
+   }
+   fn poly_test(&self, other: &Poly) -> bool {
+      //! Returns whether an intersection occurs between the two polygons.
+         let len1 = self.norms.len();
+         let len2 = other.norms.len();
+         'axes1: for i in 0..len1 { // seperating axis algorithm
+            let n = self.norms[i];
+            let max = n.dot(self.verts[i]) as f64;
+            for v in 0..len2 {
+               if max >= n.dot(other.verts[v]) {
+                  continue 'axes1; // invalid axis if it does not seperate
+               }
+            }
+            return false // valid axis found
+         }
+         'axes2: for i in 0..len2 { // rewind logo problem necessitates both polys be verified
+            let n = other.norms[i];
+            let max = n.dot(other.verts[i]) as f64;
+            for v in 0..len1 {
+               if max >= n.dot(self.verts[v]) {
+                  continue 'axes2; // invalid axis if it does not seperate
+               }
+            }
+            return false // valid axis found
+         }
+         true
+      }
+}
 
 // ---------- Shape ---------- //
 
 #[derive(Debug, Clone)]
-pub enum ShapeType {
-   Aabb { aabb: AABB }, // 32 bytes
-   Circle { circle: Circle }, // 24 bytes
-   /// Clockwise wound verticies
-   Polygon { poly: Poly }, // 32 bytes
+pub enum Shape {
+   Circle(Circle), // 24 bytes
+   Aabb(AABB), // 32 bytes
+   Poly(Poly), // 80 bytes
 }
-
-#[derive(Debug, Clone)]
-pub struct Shape {
-   pub kind: ShapeType,
-   pub aabb: AABB,
-}
-
-
 impl Shape {
-   #[inline]
-   pub fn new_aabb(aabb: AABB) -> Shape {
-      Shape { kind: ShapeType::Aabb { aabb }, aabb }
-   }
-   #[inline]
-   pub fn new_circle(rad: f64, pos: Vector2<f64>) -> Shape {
-      Shape { kind: ShapeType::Circle { circle: Circle::new(rad, pos) }, aabb: AABB::new(pos.x - rad, pos.y - rad, pos.x + rad, pos.y + rad) }
-   }
-   pub fn new_poly(poly: Poly) -> Shape {
-      let (mut ix, mut iy, mut ax, mut ay) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
-      for i in 0..poly.verts.len() { // calculate aabb
-         if poly.verts[i].x < ix { ix = poly.verts[i].x; }
-         if poly.verts[i].x > ax { ax = poly.verts[i].y; }
-         if poly.verts[i].y < iy { iy = poly.verts[i].x; }
-         if poly.verts[i].y > ay { ay = poly.verts[i].y; }
-      }
-      Shape { kind: ShapeType::Polygon { poly }, aabb: AABB::new(ix, iy, ax, ay) }
-   }
-
    pub fn point_test(&self, loc: Vector2<f64>) -> bool {
-      match &self.kind {
-         &ShapeType::Aabb { .. } => self.aabb.point_test(loc),
-         &ShapeType::Circle { circle: Circle { rad, pos } } => rad * rad >= (loc - pos).magnitude2(),
-         ShapeType::Polygon { poly } => poly.point_test(loc),
+      match self {
+         Shape::Aabb(aabb) => aabb.point_test(loc),
+         Shape::Circle(c) => c.rad * c.rad >= (loc - c.pos).magnitude2(),
+         Shape::Poly(poly) => poly.point_test(loc),
       }
    }
    /// Returns whether a line-shape intersection occurs.
    pub fn line_test(&self, a: Vector2<f64>, b: Vector2<f64>) -> bool {
-      match &self.kind {
-         &ShapeType::Aabb { .. } => self.aabb.line_test(a, b),
-         &ShapeType::Circle { circle } => circle.line_test(a, b),
-         ShapeType::Polygon { poly } => poly.line_test(a, b), // self.aabb.aabb_test(AABB::new_safe(a.x, a.y, b.x, b.y)) && ..
+      match self {
+         Shape::Aabb(aabb) => aabb.line_test(a, b),
+         Shape::Circle(c) => c.line_test(a, b),
+         Shape::Poly(poly) => poly.line_test(a, b),
       }
    }
    /// Optionally returns entrypoint of `a`->`b` through `self`.
    pub fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<Vector2<f64>> {
-      match &self.kind {
-         &ShapeType::Aabb { .. } => self.aabb.line_query(a, b),
-         &ShapeType::Circle { circle } => circle.line_query(a, b),
-         ShapeType::Polygon { poly } => poly.line_query(a, b), // self.aabb.aabb_test(AABB::new_safe(a.x, a.y, b.x, b.y)) && ..
+      match self {
+         Shape::Aabb (aabb) => aabb.line_query(a, b),
+         Shape::Circle(c) => c.line_query(a, b),
+         Shape::Poly(poly) => poly.line_query(a, b),
       }
    }
-   pub fn aabb_test(&self, aabb: AABB) -> bool {
-      match &self.kind {
-         &ShapeType::Aabb { .. } => self.aabb.aabb_test(aabb),
-         &ShapeType::Circle { circle } => aabb_circle_test(aabb, circle),
-         ShapeType::Polygon { poly } => poly_aabb_test(poly, self.aabb, aabb),
+   
+   pub fn circle_test(&self, circle: &Circle) -> bool {
+      match self {
+         Shape::Aabb(aabb) => aabb.circle_test(circle),
+         Shape::Circle(c) => c.circle_test(circle),
+         Shape::Poly(poly) => poly.circle_test(circle),
       }
    }
-   pub fn circle_test(&self, circle: Circle) -> bool {
-      match &self.kind {
-         &ShapeType::Aabb { .. } => aabb_circle_test(self.aabb, circle),
-         &ShapeType::Circle { circle: c } => circle.circle_test(c),
-         ShapeType::Polygon { poly } => poly_circle_test(poly, circle),
+   pub fn aabb_test(&self, aabb: &AABB) -> bool {
+      match self {
+         Shape::Aabb(aabb2) => aabb2.aabb_test(aabb),
+         Shape::Circle(c)  => c.aabb_test(aabb),
+         Shape::Poly(poly) => poly.aabb_test(aabb),
       }
    }
+   pub fn poly_test(&self, poly: &Poly) -> bool {
+      match self {
+         Shape::Aabb(aabb) => aabb.poly_test(poly),
+         Shape::Circle(c)  => c.poly_test(poly),
+         Shape::Poly(poly2) => poly2.poly_test(poly),
+      }
+   }
+   
    pub fn shape_test(&self, other: &Shape) -> bool {
-      match &self.kind {
-         &ShapeType::Aabb { aabb: shape } => {
-            match &other.kind {
-               &ShapeType::Aabb { .. } => shape.aabb_test(self.aabb),
-               &ShapeType::Circle { circle } => aabb_circle_test(shape, circle),
-               ShapeType::Polygon { poly } => poly_aabb_test(poly, self.aabb, shape),
+      match self {
+         Shape::Aabb(aabb) => {
+            match other {
+               Shape::Aabb(aabb2) => aabb.aabb_test(aabb2),
+               Shape::Circle(c) => aabb.circle_test(c),
+               Shape::Poly(poly) => aabb.poly_test(poly),
             }
          },
-         &ShapeType::Circle { circle: shape } => {
-            match &other.kind {
-               &ShapeType::Aabb { .. } => aabb_circle_test(self.aabb, shape),
-               &ShapeType::Circle { circle } => shape.circle_test(circle),
-               ShapeType::Polygon { poly } => poly_circle_test(poly, shape),
+         Shape::Circle(c) => {
+            match other {
+               Shape::Aabb(aabb) => c.aabb_test(aabb),
+               Shape::Circle(c2) => c.circle_test(c2),
+               Shape::Poly(poly) => c.poly_test(poly),
             }
          },
-         ShapeType::Polygon { poly: shape } => {
-            match &other.kind {
-               &ShapeType::Aabb { .. } => poly_aabb_test(shape, self.aabb, other.aabb),
-               &ShapeType::Circle { circle } => poly_circle_test(shape, circle),
-               ShapeType::Polygon { poly } => shape.poly_test(poly),
+         Shape::Poly(poly) => {
+            match other {
+               Shape::Aabb(aabb) => poly.aabb_test(aabb),
+               Shape::Circle(c) => poly.circle_test(c),
+               Shape::Poly(poly2) => poly.poly_test(poly2),
             }
          },
       }
    }
 }
-
-
-   /* /// Returns circle-line test result data.   
-   /// Tangential ray returns `RayResult::EntryExit(pos, pos)`.
-   pub fn ray_result(self, a: Vector2<f64>, b: Vector2<f64>) -> RayResult {
-      let diff = a - self.pos;
-      let unit = (b - a).normalize();
-      let dot = unit.dot(diff);
-      let x = dot * dot - (diff.magnitude2() - self.rad * self.rad);
-
-      if x < 0.0 {
-         RayResult::None
-      } else if x == 0.0 {
-         // one solution exists: d (len) = -dot
-         let tangent = a + unit.mul_element_wise(-dot);
-         RayResult::EntryExit(tangent, tangent)
-      } else {
-         // two solutions exist: d (len) = -dot +/- sqrt(x)  [+/- : exit/entry]
-         let sqrtx = x.sqrt();
-         let d = -dot - sqrtx;
-
-         if d > 1.0 || d < -1.0 {
-            RayResult::None
-         } else {
-            if self.point_query(b) {
-               if d < 0.0 {
-                  RayResult::Inside
-               } else {
-                  RayResult::Entry(a + unit.mul_element_wise(d))
-               }
-            } else {
-               let dn = -dot + sqrtx;
-               if d < 0.0 {
-                  RayResult::Exit(a + unit.mul_element_wise(dn))
-               } else {
-                  RayResult::EntryExit(a + unit.mul_element_wise(d), a + unit.mul_element_wise(dn))
-               }
-            }
-         }
-      }
-   } */

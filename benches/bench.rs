@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use intersect::inters::*;
-use cgmath::{ElementWise, Vector2};
+use intercept::inters::*;
+use cgmath::{Vector2};
 
 macro_rules! retifsome {
    ($e:expr) => {

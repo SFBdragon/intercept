@@ -130,7 +130,7 @@ impl AABB {
       cgmath::vec2(self.max.x, self.min.y)
    }
    #[inline]
-   fn translate(self, offset: Vector2<f64>) -> AABB {
+   pub fn translate(self, offset: Vector2<f64>) -> AABB {
       AABB { min: self.min + offset, max: self.max + offset }
    }
    

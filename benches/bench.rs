@@ -1,38 +1,32 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use intercept::inters::*;
-use cgmath::{Vector2};
+use cgmath::{vec2, Vector2, InnerSpace};
 
-macro_rules! retifsome {
-   ($e:expr) => {
-      if let Some(r) = $e {
-         return Some(r);
+#[inline]
+fn aabb_aabb_approx_sweep(vel_f1t2: Vector2<f64>, aabb1: &AABB, aabb2: &AABB, diff_p1p2: Vector2<f64>) -> bool {
+   let (c1c2, l1r2, r1l2) = if vel_f1t2.x >= 0.0 {
+      if vel_f1t2.y >= 0.0 {
+         (aabb2.min - aabb1.max, aabb2.maxx_miny() - aabb1.minx_maxy(), aabb2.minx_maxy() - aabb1.maxx_miny())
+      } else {
+         (aabb2.minx_maxy() - aabb1.maxx_miny(), aabb2.max - aabb1.max, aabb2.min - aabb1.min)
+      }
+   } else {
+      if vel_f1t2.y >= 0.0 {
+         (aabb2.minx_maxy() - aabb1.maxx_miny(), aabb2.min - aabb1.min, aabb2.max - aabb1.max)
+      } else {
+         (aabb2.max - aabb1.min, aabb2.minx_maxy() - aabb1.minx_maxy(), aabb2.maxx_miny() - aabb1.maxx_miny())
       }
    };
-}
-
-fn line_query(aabb: AABB, a: Vector2<f64>, b: Vector2<f64>) -> Option<Vector2<f64>> {
-   if a.x < aabb.min.x { // l/r tests
-      retifsome!(line_line_query(a, b, aabb.min, aabb.minx_maxy()));
-   } else if a.x > aabb.max.x {
-      retifsome!(line_line_query(a, b, aabb.min, aabb.minx_maxy()));
-   }
-   if a.y < aabb.min.y { // t/d tests
-      retifsome!(line_line_query(a, b, aabb.min, aabb.minx_maxy()));
-   } else if a.y > aabb.max.y {
-      retifsome!(line_line_query(a, b, aabb.min, aabb.minx_maxy()));
-   }
-   None
+   (c1c2 + diff_p1p2 - vel_f1t2).dot(vel_f1t2) < 0.0
+   && (r1l2 + diff_p1p2).perp_dot(vel_f1t2) < 0.0
+   && (l1r2 + diff_p1p2).perp_dot(vel_f1t2) > 0.0
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-   /*c.bench_function("sat line test", |b| b.iter(|| line_test(
-      black_box(AABB::new(0.0, 0.0, 1.0, 1.0)), 
-      black_box(cgmath::vec2(-0.5, -0.5)), 
-      black_box(cgmath::vec2(0.5, -0.5)))));*/
-   c.bench_function("old line aabb test", |b| b.iter(|| line_query(
-      black_box(AABB::new(0.0, 0.0, 1.0, 1.0)), 
-      black_box(cgmath::vec2(-0.5, -0.5)), 
-      black_box(cgmath::vec2(0.5, 0.5)))));
+   c.bench_function("aabb swept approx", |b| b.iter(|| aabb_aabb_approx_sweep(
+      black_box(vec2(2.0, 1.0)),black_box( &AABB::new(0.0, 0.0, 1.0, 1.0)), 
+      black_box(&AABB::new(2.0, 1.0, 3.0, 2.0)), 
+      black_box(vec2(0.0, 0.0)))));
 }
 
 criterion_group!(benches, criterion_benchmark);

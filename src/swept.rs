@@ -22,7 +22,6 @@ pub struct Body {
    /// Velocity
    pub vel: Vector2<f64>,
 }
-
 impl Body {
    pub fn new(shapes: Vec<Shape>) -> Body {
       let (mut ix, mut iy, mut ax, mut ay) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
@@ -41,49 +40,49 @@ impl Body {
 // ---------- Approximate Sweep Bounding Tests ---------- //
 
 #[inline]
-fn aabb_circle_approx_sweep(unit_dir: Vector2<f64>, aabb: &AABB, center: Vector2<f64>, rad: f64) -> bool {
-   let (closest, leftmost, rightmost) = if unit_dir.x >= 0.0 {
-      if unit_dir.y >= 0.0 {
-         (aabb.min, aabb.minx_maxy(), aabb.maxx_miny())
+fn aabb_circle_approx_sweep(vel: Vector2<f64>, unit_vel: Vector2<f64>, aabb: &AABB, o: Vector2<f64>, rad: f64) -> bool {
+   let (c, l, r) = if vel.x >= 0.0 {
+      if vel.y >= 0.0 {
+         (aabb.max, aabb.maxx_miny(), aabb.minx_maxy())
       } else {
-         (aabb.minx_maxy(), aabb.max, aabb.min)
+         (aabb.maxx_miny(), aabb.min, aabb.max)
       }
    } else {
-      if unit_dir.y >= 0.0 {
-         (aabb.maxx_miny(), aabb.min, aabb.max)
+      if vel.y >= 0.0 {
+         (aabb.minx_maxy(), aabb.max, aabb.min)
       } else {
-         (aabb.max, aabb.maxx_miny(), aabb.minx_maxy())
+         (aabb.min, aabb.minx_maxy(), aabb.maxx_miny())
       }
    };
-   !(rad < unit_dir.dot(center - closest) 
-   || ((center - leftmost).perp_dot(unit_dir) > rad 
-   && (center - rightmost).perp_dot(unit_dir) < rad))
+   unit_vel.dot(o - c - vel) < rad
+   && (l - o).perp_dot(unit_vel) < rad
+   && (r - o).perp_dot(unit_vel) > -rad
 }
 #[inline]
-fn aabb_aabb_approx_sweep(dir: Vector2<f64>, aabb1: &AABB, aabb2: &AABB, diff_p1p2: Vector2<f64>) -> bool {
-   let (closest1, leftmost1, rightmost1, closest2, leftmost2, rightmost2) = if dir.x >= 0.0 {
-      if dir.y >= 0.0 {
-         (aabb1.max, aabb1.maxx_miny(), aabb1.minx_maxy(), aabb2.min, aabb2.minx_maxy(), aabb2.maxx_miny())
+fn aabb_aabb_approx_sweep(vel_f1t2: Vector2<f64>, aabb1: &AABB, aabb2: &AABB, diff_p1p2: Vector2<f64>) -> bool {
+   let (c1c2, l1r2, r1l2) = if vel_f1t2.x >= 0.0 {
+      if vel_f1t2.y >= 0.0 {
+         (aabb2.min - aabb1.max, aabb2.maxx_miny() - aabb1.minx_maxy(), aabb2.minx_maxy() - aabb1.maxx_miny())
       } else {
-         (aabb1.maxx_miny(), aabb1.min, aabb1.max, aabb2.minx_maxy(), aabb2.max, aabb2.min)
+         (aabb2.minx_maxy() - aabb1.maxx_miny(), aabb2.max - aabb1.max, aabb2.min - aabb1.min)
       }
    } else {
-      if dir.y >= 0.0 {
-         (aabb1.minx_maxy(), aabb1.max, aabb1.min, aabb2.maxx_miny(), aabb2.min, aabb2.max)
+      if vel_f1t2.y >= 0.0 {
+         (aabb2.minx_maxy() - aabb1.maxx_miny(), aabb2.min - aabb1.min, aabb2.max - aabb1.max)
       } else {
-         (aabb1.min, aabb1.minx_maxy(), aabb1.maxx_miny(), aabb2.max, aabb2.maxx_miny(), aabb2.minx_maxy())
+         (aabb2.max - aabb1.min, aabb2.minx_maxy() - aabb1.minx_maxy(), aabb2.maxx_miny() - aabb1.maxx_miny())
       }
    };
-   !(dir.dot(closest1) > dir.dot(closest2 + diff_p1p2) 
-   || (leftmost1.perp_dot(dir) > (leftmost2 + diff_p1p2).perp_dot(dir))
-   && rightmost1.perp_dot(dir) < (rightmost2 + diff_p1p2).perp_dot(dir))
+   (c1c2 + diff_p1p2 - vel_f1t2).dot(vel_f1t2) < 0.0
+   && (r1l2 + diff_p1p2).perp_dot(vel_f1t2) < 0.0
+   && (l1r2 + diff_p1p2).perp_dot(vel_f1t2) > 0.0
 }
 
 
 // ---------- Sweep ---------- //
 
-fn aabb_aabb_swept(b1: &Body, a1: &AABB, b2: &Body, a2: &AABB) -> Option<(Vector2<f64>, f64)> {
-   let rv = b1.vel - b2.vel;
+fn aabb_aabb_swept(b1: &Body, a1: &AABB, b2: &Body, a2: &AABB, t: f64) -> Option<(Vector2<f64>, f64)> {
+   let rv = (b1.vel - b2.vel).mul_element_wise(t);
    let dpos = b2.pos - b1.pos;
    let (dx_entry, dx_exit, dy_entry, dy_exit): (f64, f64, f64, f64);
    if rv.x >= 0.0 {
@@ -142,29 +141,27 @@ fn aabb_aabb_swept(b1: &Body, a1: &AABB, b2: &Body, a2: &AABB) -> Option<(Vector
       }
    }
 }
-fn circle_circle_swept(b1: &Body, c1: &Circle, b2: &Body, c2: &Circle) -> Option<(Vector2<f64>, f64)> {
-   let rv = b1.vel - b2.vel;
+fn circle_circle_swept(b1: &Body, c1: &Circle, b2: &Body, c2: &Circle, t: f64) -> Option<(Vector2<f64>, f64)> {
+   let rv = (b1.vel - b2.vel).mul_element_wise(t);
    let unit = rv.normalize();
-   let dpos = b2.pos - b1.pos;
+   let c1c2 = b2.pos - b1.pos + c2.pos - c1.pos;
    let srad = c1.rad + c2.rad;
 
-   // calculate the perpendicular (to velocity) difference in position of the circles
-   let lat_diff = (unit.perp_dot(c1.pos) - unit.perp_dot(c2.pos + dpos)).abs();
-   if lat_diff > srad { // check if circles are on a collision course
+   let lat_diff = c1c2.perp_dot(unit).abs();
+   if lat_diff > srad { // check if circles are too far apart along vel
       return None
    }
-   // calculate the difference (against velocity) in position of the circles
-   let d = (unit.dot(c2.pos + dpos) - unit.dot(c1.pos)) + (srad * srad - lat_diff * lat_diff).sqrt();
+   let d = c1c2.dot(unit) - (srad * srad - lat_diff * lat_diff).sqrt();
    let t = d / unit.dot(rv) as f64;
-   if t >= 1.0 { // if t == 1, no resolution need take place
+   if t >= 1.0 || t < 0.0 {
       None
    } else {
-      Some((-dpos.normalize(), t))
+      Some((-c1c2.normalize(), t))
    }
 }
-fn poly_poly_swept(b1: &Body, p1: &Poly, b2: &Body, p2: &Poly) -> Option<(Vector2<f64>, f64)> {
+fn poly_poly_swept(b1: &Body, p1: &Poly, b2: &Body, p2: &Poly, t: f64) -> Option<(Vector2<f64>, f64)> {
    let dpos = b2.pos - b1.pos;
-   let rv2 = b1.vel - b2.vel;
+   let rv2 = (b1.vel - b2.vel).mul_element_wise(t);
    if !aabb_aabb_approx_sweep(rv2, &p1.aabb, &p2.aabb, dpos) {
       return None
    }
@@ -172,7 +169,7 @@ fn poly_poly_swept(b1: &Body, p1: &Poly, b2: &Body, p2: &Poly) -> Option<(Vector
    let mut immenence2 = f64::MAX; // distance to collision squared
    let mut imminent_norm = cgmath::vec2(0.0, 0.0); // norm of collision
    
-   let rv1 = b2.vel - b1.vel;
+   let rv1 = -rv2;
    'p1f: for i in 0..p1.norms.len() {
       let n = p1.norms[i];
       if n.dot(rv1) > 0.0 {
@@ -246,9 +243,9 @@ fn poly_poly_swept(b1: &Body, p1: &Poly, b2: &Body, p2: &Poly) -> Option<(Vector
    }
 }
 
-fn aabb_circle_swept(b1: &Body, aabb: &AABB, b2: &Body, circle: &Circle) -> Option<(Vector2<f64>, f64)> {
+fn aabb_circle_swept(b1: &Body, aabb: &AABB, b2: &Body, circle: &Circle, t: f64) -> Option<(Vector2<f64>, f64)> {
    // Checks against expanded AABB, if it's a corner case, circle test to get collision point if any
-   let rvb2 = b2.vel - b1.vel;
+   let rvb2 = (b2.vel - b1.vel).mul_element_wise(t);
    if rvb2.x > 0.0 { // LEFT
       if let Some(result) = super::inters::line_line_query(circle.pos, circle.pos + rvb2, 
          aabb.min.sub_element_wise(circle.rad), cgmath::vec2(aabb.min.x - circle.rad, aabb.max.y + circle.rad)) {
@@ -329,8 +326,8 @@ fn aabb_circle_swept(b1: &Body, aabb: &AABB, b2: &Body, circle: &Circle) -> Opti
    }
    None
 }
-fn aabb_poly_swept(b1: &Body, aabb: &AABB, b2: &Body, poly: &Poly) -> Option<(Vector2<f64>, f64)> {
-   let rv1 = b1.vel - b2.vel; // relative veocity to b1/a1
+fn aabb_poly_swept(b1: &Body, aabb: &AABB, b2: &Body, poly: &Poly, t: f64) -> Option<(Vector2<f64>, f64)> {
+   let rv1 = (b1.vel - b2.vel).mul_element_wise(t); // relative veocity to b1/a1
    let dpos = b2.pos - b1.pos; // offset of b2 from b1
    if !aabb_aabb_approx_sweep(rv1, &aabb, &poly.aabb, dpos) {
       return None
@@ -443,11 +440,11 @@ fn aabb_poly_swept(b1: &Body, aabb: &AABB, b2: &Body, poly: &Poly) -> Option<(Ve
       None
    }
 }
-fn circle_poly_swept(b1: &Body, circle: &Circle, b2: &Body, poly: &Poly) -> Option<(Vector2<f64>, f64)> {
-   let rv = b1.vel - b2.vel;
+fn circle_poly_swept(b1: &Body, circle: &Circle, b2: &Body, poly: &Poly, t: f64) -> Option<(Vector2<f64>, f64)> {
+   let rv = (b1.vel - b2.vel).mul_element_wise(t);
    let unit_rv = rv.normalize();
    let o = b1.pos - b2.pos + circle.pos;
-   if !aabb_circle_approx_sweep(unit_rv, &poly.aabb, o, circle.rad) {
+   if !aabb_circle_approx_sweep(rv, unit_rv, &poly.aabb, o, circle.rad) {
       return None
    }
    
@@ -496,177 +493,182 @@ fn circle_poly_swept(b1: &Body, circle: &Circle, b2: &Body, poly: &Poly) -> Opti
          }
       }
    }
-   // circle is inside poly, no collision occurs
-   None
+   None // circle is inside poly, no collision occurs
 }
 
 pub trait Sweep {
-   fn get_broad_aabb(&self, b: &Body) -> AABB;
+   fn get_broad_aabb(&self, b: &Body, t: f64) -> AABB;
 
-   fn circle_sweep(&self, b1: &Body, circle: &Circle, b2: &Body) -> Option<(Vector2<f64>, f64)>;
-   fn aabb_sweep(&self, b1: &Body, aabb: &AABB, b2: &Body) -> Option<(Vector2<f64>, f64)>;
-   fn poly_sweep(&self, b1: &Body, poly: &Poly, b2: &Body) -> Option<(Vector2<f64>, f64)>;
+   fn circle_sweep(&self, b1: &Body, circle: &Circle, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)>;
+   fn aabb_sweep(&self, b1: &Body, aabb: &AABB, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)>;
+   fn poly_sweep(&self, b1: &Body, poly: &Poly, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)>;
 
-   fn shape_sweep(&self, b1: &Body, shape: &Shape, b2: &Body) -> Option<(Vector2<f64>, f64)>;
+   fn shape_sweep(&self, b1: &Body, shape: &Shape, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)>;
 }
 
 impl Sweep for Circle {
-   fn get_broad_aabb(&self, b: &Body) -> AABB {
-      if b.vel.x >= 0.0 {
-         if b.vel.y >= 0.0 {
-            AABB { min: self.pos.sub_element_wise(self.rad), max: self.pos.add_element_wise(self.rad) + b.vel }
+   fn get_broad_aabb(&self, b: &Body, t: f64) -> AABB {
+      let vel = b.vel.mul_element_wise(t);
+      if vel.x >= 0.0 {
+         if vel.y >= 0.0 {
+            AABB { min: self.pos.sub_element_wise(self.rad), max: self.pos.add_element_wise(self.rad) + vel }
          } else {
-            AABB::new(self.pos.x - self.rad, self.pos.y - self.rad - b.vel.y, self.pos.x + self.rad + b.vel.x, self.pos.y + self.rad)
+            AABB::new(self.pos.x - self.rad, self.pos.y - self.rad - vel.y, self.pos.x + self.rad + vel.x, self.pos.y + self.rad)
          }
       } else {
-         if b.vel.y >= 0.0 {
-            AABB::new(self.pos.x - self.rad - b.vel.x, self.pos.y - self.rad, self.pos.x + self.rad, self.pos.y + self.rad + b.vel.y)
+         if vel.y >= 0.0 {
+            AABB::new(self.pos.x - self.rad - vel.x, self.pos.y - self.rad, self.pos.x + self.rad, self.pos.y + self.rad + vel.y)
          } else {
-            AABB { min: self.pos.sub_element_wise(self.rad) - b.vel, max: self.pos.add_element_wise(self.rad) }
+            AABB { min: self.pos.sub_element_wise(self.rad) - vel, max: self.pos.add_element_wise(self.rad) }
          }
       }
    }
 
    #[inline]
-   fn circle_sweep(&self, b1: &Body, circle: &Circle, b2: &Body) -> Option<(Vector2<f64>, f64)> {
-      circle_circle_swept(b1, self, b2, circle)
+   fn circle_sweep(&self, b1: &Body, circle: &Circle, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
+      circle_circle_swept(b1, self, b2, circle, t)
    }
    #[inline]
-   fn aabb_sweep(&self, b1: &Body, aabb: &AABB, b2: &Body) -> Option<(Vector2<f64>, f64)> {
-      inv_norm!(aabb_circle_swept(b2, aabb, b1, self))
+   fn aabb_sweep(&self, b1: &Body, aabb: &AABB, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
+      inv_norm!(aabb_circle_swept(b2, aabb, b1, self, t))
    }
    #[inline]
-   fn poly_sweep(&self, b1: &Body, poly: &Poly, b2: &Body) -> Option<(Vector2<f64>, f64)> {
-      circle_poly_swept(b1, self, b2, poly)
+   fn poly_sweep(&self, b1: &Body, poly: &Poly, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
+      circle_poly_swept(b1, self, b2, poly, t)
    }
 
-   fn shape_sweep(&self, b1: &Body, shape: &Shape, b2: &Body) -> Option<(Vector2<f64>, f64)> {
+   fn shape_sweep(&self, b1: &Body, shape: &Shape, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
       match shape {
-         Shape::Circle(c) => self.circle_sweep(b1, c, b2),
-         Shape::Aabb(aabb) => self.aabb_sweep(b1, aabb, b2),
-         Shape::Poly(poly) => self.poly_sweep(b1, poly, b2),
+         Shape::Circle(c) => self.circle_sweep(b1, c, b2, t),
+         Shape::Aabb(aabb) => self.aabb_sweep(b1, aabb, b2, t),
+         Shape::Poly(poly) => self.poly_sweep(b1, poly, b2, t),
       }
    }
 }
 impl Sweep for AABB {
-   fn get_broad_aabb(&self, b: &Body) -> AABB {
-      if b.vel.x >= 0.0 {
-         if b.vel.y >= 0.0 {
-            AABB { min: self.min, max: self.max + b.vel }
+   fn get_broad_aabb(&self, b: &Body, t: f64) -> AABB {
+      let vel = b.vel.mul_element_wise(t);
+      if vel.x >= 0.0 {
+         if vel.y >= 0.0 {
+            AABB { min: self.min, max: self.max + vel }
          } else {
-            AABB::new(self.min.x, self.min.y - b.vel.y, self.max.x + b.vel.x, self.max.y)
+            AABB::new(self.min.x, self.min.y - vel.y, self.max.x + vel.x, self.max.y)
          }
       } else {
-         if b.vel.y >= 0.0 {
-            AABB::new(self.min.x - b.vel.x, self.min.y, self.max.x, self.max.y + b.vel.y)
+         if vel.y >= 0.0 {
+            AABB::new(self.min.x - vel.x, self.min.y, self.max.x, self.max.y + vel.y)
          } else {
-            AABB { min: self.min - b.vel, max: self.max }
+            AABB { min: self.min - vel, max: self.max }
          }
       }
    }
 
    #[inline]
-   fn circle_sweep(&self, b1: &Body, circle: &Circle, b2: &Body) -> Option<(Vector2<f64>, f64)> {
-      aabb_circle_swept(b1, self, b2, circle)
+   fn circle_sweep(&self, b1: &Body, circle: &Circle, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
+      aabb_circle_swept(b1, self, b2, circle, t)
    }
    #[inline]
-   fn aabb_sweep(&self, b1: &Body, aabb: &AABB, b2: &Body) -> Option<(Vector2<f64>, f64)> {
-      aabb_aabb_swept(b1, self, b2, aabb)
+   fn aabb_sweep(&self, b1: &Body, aabb: &AABB, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
+      aabb_aabb_swept(b1, self, b2, aabb, t)
    }
    #[inline]
-   fn poly_sweep(&self, b1: &Body, poly: &Poly, b2: &Body) -> Option<(Vector2<f64>, f64)> {
-      aabb_poly_swept(b1, self, b2, poly)
+   fn poly_sweep(&self, b1: &Body, poly: &Poly, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
+      aabb_poly_swept(b1, self, b2, poly, t)
    }
 
-   fn shape_sweep(&self, b1: &Body, shape: &Shape, b2: &Body) -> Option<(Vector2<f64>, f64)> {
+   fn shape_sweep(&self, b1: &Body, shape: &Shape, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
       match shape {
-         Shape::Circle(c) => self.circle_sweep(b1, c, b2),
-         Shape::Aabb(aabb) => self.aabb_sweep(b1, aabb, b2),
-         Shape::Poly(poly) => self.poly_sweep(b1, poly, b2),
+         Shape::Circle(c) => self.circle_sweep(b1, c, b2, t),
+         Shape::Aabb(aabb) => self.aabb_sweep(b1, aabb, b2, t),
+         Shape::Poly(poly) => self.poly_sweep(b1, poly, b2, t),
       }
    }
 }
 impl Sweep for Poly {
-   fn get_broad_aabb(&self, b: &Body) -> AABB {
-      if b.vel.x >= 0.0 {
-         if b.vel.y >= 0.0 {
-            AABB { min: self.aabb.min, max: self.aabb.max + b.vel }
+   fn get_broad_aabb(&self, b: &Body, t: f64) -> AABB {
+      let vel = b.vel.mul_element_wise(t);
+      if vel.x >= 0.0 {
+         if vel.y >= 0.0 {
+            AABB { min: self.aabb.min, max: self.aabb.max + vel }
          } else {
-            AABB::new(self.aabb.min.x, self.aabb.min.y - b.vel.y, self.aabb.max.x + b.vel.x, self.aabb.max.y)
+            AABB::new(self.aabb.min.x, self.aabb.min.y - vel.y, self.aabb.max.x + vel.x, self.aabb.max.y)
          }
       } else {
-         if b.vel.y >= 0.0 {
-            AABB::new(self.aabb.min.x - b.vel.x, self.aabb.min.y, self.aabb.max.x, self.aabb.max.y + b.vel.y)
+         if vel.y >= 0.0 {
+            AABB::new(self.aabb.min.x - vel.x, self.aabb.min.y, self.aabb.max.x, self.aabb.max.y + vel.y)
          } else {
-            AABB { min: self.aabb.min - b.vel, max: self.aabb.max }
+            AABB { min: self.aabb.min - vel, max: self.aabb.max }
          }
       }
    }
 
    #[inline]
-   fn circle_sweep(&self, b1: &Body, circle: &Circle, b2: &Body) -> Option<(Vector2<f64>, f64)> {
-      inv_norm!(circle_poly_swept(b2, circle, b1, self))
+   fn circle_sweep(&self, b1: &Body, circle: &Circle, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
+      inv_norm!(circle_poly_swept(b2, circle, b1, self, t))
    }
    #[inline]
-   fn aabb_sweep(&self, b1: &Body, aabb: &AABB, b2: &Body) -> Option<(Vector2<f64>, f64)> {
-      inv_norm!(aabb_poly_swept(b2, aabb, b1, self))
+   fn aabb_sweep(&self, b1: &Body, aabb: &AABB, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
+      inv_norm!(aabb_poly_swept(b2, aabb, b1, self, t))
    }
    #[inline]
-   fn poly_sweep(&self, b1: &Body, poly: &Poly, b2: &Body) -> Option<(Vector2<f64>, f64)> {
-      poly_poly_swept(b1, self, b2, poly)
+   fn poly_sweep(&self, b1: &Body, poly: &Poly, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
+      poly_poly_swept(b1, self, b2, poly, t)
    }
 
-   fn shape_sweep(&self, b1: &Body, shape: &Shape, b2: &Body) -> Option<(Vector2<f64>, f64)> {
+   fn shape_sweep(&self, b1: &Body, shape: &Shape, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
       match shape {
-         Shape::Circle(c) => self.circle_sweep(b1, c, b2),
-         Shape::Aabb(aabb) => self.aabb_sweep(b1, aabb, b2),
-         Shape::Poly(poly) => self.poly_sweep(b1, poly, b2),
+         Shape::Circle(c) => self.circle_sweep(b1, c, b2, t),
+         Shape::Aabb(aabb) => self.aabb_sweep(b1, aabb, b2, t),
+         Shape::Poly(poly) => self.poly_sweep(b1, poly, b2, t),
       }
    }
 }
 impl Sweep for Shape {
-   fn get_broad_aabb(&self, b: &Body) -> AABB {
+   #[inline]
+   fn get_broad_aabb(&self, b: &Body, t: f64) -> AABB {
       match self {
-         Shape::Circle(c) => c.get_broad_aabb(b),
-         Shape::Aabb(aabb) => aabb.get_broad_aabb(b),
-         Shape::Poly(poly) => poly.get_broad_aabb(b),
+         Shape::Circle(c) => c.get_broad_aabb(b, t),
+         Shape::Aabb(aabb) => aabb.get_broad_aabb(b, t),
+         Shape::Poly(poly) => poly.get_broad_aabb(b, t),
       }
    }
 
    #[inline]
-   fn circle_sweep(&self, b1: &Body, circle: &Circle, b2: &Body) -> Option<(Vector2<f64>, f64)> {
+   fn circle_sweep(&self, b1: &Body, circle: &Circle, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
       match self {
-         Shape::Circle(c) => c.circle_sweep(b1, circle, b2),
-         Shape::Aabb(aabb) => aabb.circle_sweep(b1, circle, b2),
-         Shape::Poly(poly) => poly.circle_sweep(b1, circle, b2),
+         Shape::Circle(c) => c.circle_sweep(b1, circle, b2, t),
+         Shape::Aabb(aabb) => aabb.circle_sweep(b1, circle, b2, t),
+         Shape::Poly(poly) => poly.circle_sweep(b1, circle, b2, t),
       }
    }
    #[inline]
-   fn aabb_sweep(&self, b1: &Body, aabb: &AABB, b2: &Body) -> Option<(Vector2<f64>, f64)> {
+   fn aabb_sweep(&self, b1: &Body, aabb: &AABB, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
       match self {
-         Shape::Circle(c) => c.aabb_sweep(b1, aabb, b2),
-         Shape::Aabb(aabb) => aabb.aabb_sweep(b1, aabb, b2),
-         Shape::Poly(poly) => poly.aabb_sweep(b1, aabb, b2),
+         Shape::Circle(c) => c.aabb_sweep(b1, aabb, b2, t),
+         Shape::Aabb(aabb) => aabb.aabb_sweep(b1, aabb, b2, t),
+         Shape::Poly(poly) => poly.aabb_sweep(b1, aabb, b2, t),
       }
    }
    #[inline]
-   fn poly_sweep(&self, b1: &Body, poly: &Poly, b2: &Body) -> Option<(Vector2<f64>, f64)> {
+   fn poly_sweep(&self, b1: &Body, poly: &Poly, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
       match self {
-         Shape::Circle(c) => c.poly_sweep(b1, poly, b2),
-         Shape::Aabb(aabb) => aabb.poly_sweep(b1, poly, b2),
-         Shape::Poly(poly) => poly.poly_sweep(b1, poly, b2),
+         Shape::Circle(c) => c.poly_sweep(b1, poly, b2, t),
+         Shape::Aabb(aabb) => aabb.poly_sweep(b1, poly, b2, t),
+         Shape::Poly(poly) => poly.poly_sweep(b1, poly, b2, t),
       }
    }
 
-   fn shape_sweep(&self, b1: &Body, shape: &Shape, b2: &Body) -> Option<(Vector2<f64>, f64)> {
+   #[inline]
+   fn shape_sweep(&self, b1: &Body, shape: &Shape, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
       match shape {
-         Shape::Circle(c) => self.circle_sweep(b1, c, b2),
-         Shape::Aabb(aabb) => self.aabb_sweep(b1, aabb, b2),
-         Shape::Poly(poly) => self.poly_sweep(b1, poly, b2),
+         Shape::Circle(c) => self.circle_sweep(b1, c, b2, t),
+         Shape::Aabb(aabb) => self.aabb_sweep(b1, aabb, b2, t),
+         Shape::Poly(poly) => self.poly_sweep(b1, poly, b2, t),
       }
    }
 }
 
+#[derive(Debug, Clone)]
 pub struct SweptDynStatData {
    /// Index of the colliding shape of body.
    pub b1_shape: usize,
@@ -678,13 +680,13 @@ pub struct SweptDynStatData {
    pub travel: f64,
 }
 
-pub fn body_body_swept(b1: &Body, b2: &Body) -> Option<SweptDynStatData> {
+pub fn body_body_swept(b1: &Body, b2: &Body, t: f64) -> Option<SweptDynStatData> {
    let mut result: Option<SweptDynStatData> = None;
    let mut travel = f64::MAX;
    for (x, s1) in b1.shapes.iter().enumerate() {
       for (y, s2) in b2.shapes.iter().enumerate() {
-         if s1.get_broad_aabb(b1).aabb_test(&s2.get_broad_aabb(b2)) {
-            if let Some((n, t)) = s1.shape_sweep(b1, s2, b2) {
+         if s1.get_broad_aabb(b1, t).aabb_test(&s2.get_broad_aabb(b2, t)) {
+            if let Some((n, t)) = s1.shape_sweep(b1, s2, b2, t) {
                if t < travel {
                   travel = t;
                   result = Some(SweptDynStatData {
@@ -699,4 +701,31 @@ pub fn body_body_swept(b1: &Body, b2: &Body) -> Option<SweptDynStatData> {
       }
    }
    result
+}
+
+#[cfg(test)]
+mod tests {
+   use cgmath::vec2;
+   use super::*;
+
+   #[test]
+   fn aabb_circle_approx_sweep_test() {
+      let aabb = AABB::new(0.0, 0.0, 1.0, 1.0);
+      let circle = Circle::new(1.0, 2.0, 2.0);
+      assert_eq!(aabb_circle_approx_sweep(vec2(1.0, 1.0), vec2(1.0, 1.0).normalize(), &aabb, circle.pos, circle.rad), true);
+   }
+
+   #[test]
+   fn aabb_aabb_approx_sweep_test() {
+      let aabb1 = AABB::new(0.0, 0.0, 1.0, 1.0);
+      let aabb2 = AABB::new(2.0, 1.0, 3.0, 2.0);
+      assert_eq!(aabb_aabb_approx_sweep(vec2(2.0, 0.0), &aabb1, &aabb2, vec2(0.0, 0.0)), false);
+      assert_eq!(aabb_aabb_approx_sweep(vec2(1.0, 0.0), &aabb1, &aabb2.translate(vec2(0.0, -1.0)), vec2(0.0, 0.0)), false);
+      assert_eq!(aabb_aabb_approx_sweep(vec2(2.0, 0.0), &aabb1, &aabb2.translate(vec2(0.0, 1.0)), vec2(0.0, 0.0)), false);
+
+      assert_eq!(aabb_aabb_approx_sweep(vec2(2.0, 1.0), &AABB::new(0.0, 0.0, 1.0, 1.0), &AABB::new(2.0, 1.0, 3.0, 2.0), vec2(0.0, 0.0)), true);
+      assert_eq!(aabb_aabb_approx_sweep(vec2(2.0, 1.1), &aabb1, &aabb2.translate(vec2(0.0, 1.0)), vec2(0.0, 0.0)), true);
+   }
+
+   // todo: swept tests
 }

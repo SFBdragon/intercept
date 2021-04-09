@@ -52,10 +52,10 @@ pub fn line_line_query(a1: Vector2<f64>, a2: Vector2<f64>, b1: Vector2<f64>, b2:
    let dd = dot * dot;
 
    let nd1 = a1 - b1;
-   let tdd = (da.x * nd1.y - da.y * nd1.x) * dot;
+   let tdd = (db.x * nd1.y - db.y * nd1.x) * dot;
    if tdd < 0.0 || tdd > dd { return None }
 
-   let udd = (db.x * nd1.y - db.y * nd1.x) * dot;
+   let udd = (da.x * nd1.y - da.y * nd1.x) * dot;
    if udd < 0.0 || udd > dd { return None }
 
    let t = tdd / dd;
@@ -221,11 +221,13 @@ impl Poly {
       Poly { aabb: AABB::new(ix, iy, ax, ay), verts, norms }
    }
 
-   pub fn translate(&mut self, offset: Vector2<f64>) {
+   #[inline]
+   pub fn translate(mut self, offset: Vector2<f64>) -> Poly {
       self.aabb = self.aabb.translate(offset);
       for i in 0..self.verts.len() {
          self.verts[i] = self.verts[i] + offset;
       }
+      self
    }
 }
 
@@ -338,25 +340,23 @@ impl Intersect for Circle {
       let disty = self.pos.y - (b.y + u * dy);
       self.rad * self.rad >= distx * distx + disty * disty
    }
+   #[inline]
    fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<Vector2<f64>> {
-      //! Optionally returns entrypoint of `a`->`b` through `self`.
+      //! Optionally returns entrypoint of `a`->`b` through `self`. Does not return tangential intersections.
       let diff = a - self.pos;
-      let unit = (b - a).normalize();
+      let ab = b - a;
+      let magnitude = ab.magnitude() as f64;
+      let unit = ab.div_element_wise(magnitude); // normalization
+      
       let dot = unit.dot(diff) as f64;
-      let x = dot * dot - (diff.magnitude2() - self.rad * self.rad);
-
-      if x < 0.0 {
-         None
-      } else if x == 0.0 {
-         Some(a + unit.mul_element_wise(-dot))
-      } else {
-         let d = -dot - x.sqrt();
-         if d <= 1.0 && d >= 0.0 {
-            Some(a + unit.mul_element_wise(d))
-         } else {
-            None
+      let x = self.rad * self.rad + dot * dot - diff.magnitude2() as f64;
+      if x > 0.0 {
+         let d = -(dot + x.sqrt());
+         if d >= 0.0 && d <= magnitude {
+            return Some(a + unit.mul_element_wise(d))
          }
       }
+      None
    }
    
    #[inline]
@@ -372,7 +372,6 @@ impl Intersect for Circle {
       poly_circle_test(poly, self)
    }
 }
-
 impl Intersect for AABB {
    #[inline]
    fn get_aabb(&self) -> AABB {
@@ -424,7 +423,6 @@ impl Intersect for AABB {
       poly_aabb_test(poly, self)
    }
 }
-
 impl Intersect for Poly {
    #[inline]
    fn get_aabb(&self) -> AABB {
@@ -575,5 +573,32 @@ impl Intersect for Shape {
          Shape::Circle(c)  => c.poly_test(poly),
          Shape::Poly(poly2) => poly2.poly_test(poly),
       }
+   }
+}
+
+
+#[cfg(test)]
+mod tests {
+   use cgmath::{vec2};
+   use super::*;
+
+   #[test]
+   fn line_seg_test() {
+      assert_eq!(line_line_query(vec2(0.0, 0.0), vec2(3.0, 1.0), vec2(2.0, 1.0), vec2(2.0, -4.0)), Some(vec2(2.0, 2.0 / 3.0)));
+      assert_eq!(line_line_query(vec2(3.0, 1.0), vec2(0.0, 0.0), vec2(2.0, 1.0), vec2(2.0, -4.0)), Some(vec2(2.0, 1.0 - (1.0 / 3.0))));
+   }
+
+   #[test]
+   fn circle_seg_test() {
+      let c = Circle::new(0.5, 0.5, 0.5);
+      
+      assert_eq!(c.line_query(vec2(0.0, 1.0), vec2(3.0, 1.0)).is_some(), false);
+      assert_eq!(c.line_query(vec2(3.0, 1.0), vec2(0.0, 1.0)).is_some(), false);
+      assert_eq!(c.line_query(vec2(0.0, 0.0), vec2(-1.0, -1.0)).is_some(), false);
+      
+      assert_eq!(c.line_query(vec2(-1.0, 0.5), vec2(3.0, 0.5)), Some(vec2(0.0, 0.5)));
+      assert_eq!(c.line_query(vec2(0.0, 0.0), vec2(3.0, 1.0)).is_some(), true);
+      assert_eq!(c.line_query(vec2(3.0, 1.0), vec2(0.0, 0.0)).is_some(), true);
+      assert_eq!(c.line_query(vec2(0.0, 0.9), vec2(3.0, 1.0)).is_some(), true);
    }
 }

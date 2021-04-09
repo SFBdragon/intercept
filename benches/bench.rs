@@ -1,32 +1,16 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use intercept::inters::*;
-use cgmath::{vec2, Vector2, InnerSpace};
-
-#[inline]
-fn aabb_aabb_approx_sweep(vel_f1t2: Vector2<f64>, aabb1: &AABB, aabb2: &AABB, diff_p1p2: Vector2<f64>) -> bool {
-   let (c1c2, l1r2, r1l2) = if vel_f1t2.x >= 0.0 {
-      if vel_f1t2.y >= 0.0 {
-         (aabb2.min - aabb1.max, aabb2.maxx_miny() - aabb1.minx_maxy(), aabb2.minx_maxy() - aabb1.maxx_miny())
-      } else {
-         (aabb2.minx_maxy() - aabb1.maxx_miny(), aabb2.max - aabb1.max, aabb2.min - aabb1.min)
-      }
-   } else {
-      if vel_f1t2.y >= 0.0 {
-         (aabb2.minx_maxy() - aabb1.maxx_miny(), aabb2.min - aabb1.min, aabb2.max - aabb1.max)
-      } else {
-         (aabb2.max - aabb1.min, aabb2.minx_maxy() - aabb1.minx_maxy(), aabb2.maxx_miny() - aabb1.maxx_miny())
-      }
-   };
-   (c1c2 + diff_p1p2 - vel_f1t2).dot(vel_f1t2) < 0.0
-   && (r1l2 + diff_p1p2).perp_dot(vel_f1t2) < 0.0
-   && (l1r2 + diff_p1p2).perp_dot(vel_f1t2) > 0.0
-}
+use intercept::swept::*;
+use cgmath::{vec2};
 
 fn criterion_benchmark(c: &mut Criterion) {
-   c.bench_function("aabb swept approx", |b| b.iter(|| aabb_aabb_approx_sweep(
-      black_box(vec2(2.0, 1.0)),black_box( &AABB::new(0.0, 0.0, 1.0, 1.0)), 
-      black_box(&AABB::new(2.0, 1.0, 3.0, 2.0)), 
-      black_box(vec2(0.0, 0.0)))));
+   let a1 = AABB::new(0.0, 0.0, 1.0, 1.0);
+   let b1 = Body { aabb: a1, shapes: vec![Shape::Aabb(a1)], pos: vec2(0.0, 0.0), vel: vec2(0.0, 0.0) };
+   let c2 = Circle::new(0.5, 2.0, 2.0);
+   let b2 = Body { aabb: c2.get_aabb(), shapes: vec![Shape::Circle(c2)], pos: vec2(1.0, 1.4), vel: vec2(-2.0, -2.0) };
+
+   c.bench_function("aabb circle swept", |b| b.iter(|| a1.circle_sweep(black_box(&b1), black_box(&c2), 
+   black_box(&b2), black_box(1.0))));
 }
 
 criterion_group!(benches, criterion_benchmark);

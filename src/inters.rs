@@ -62,6 +62,7 @@ pub fn line_line_query(a1: Vector2<f64>, a2: Vector2<f64>, b1: Vector2<f64>, b2:
    Some(cgmath::vec2(a1.x + t * da.x, a1.y + t * da.y))
 }
 
+
 #[derive(Clone, Copy, Debug)]
 pub struct Circle {
    pub rad: f64,
@@ -96,7 +97,7 @@ pub struct AABB {
 impl AABB {
    #[inline]
    pub fn new(minx: f64, miny: f64, maxx: f64, maxy: f64) -> AABB {
-      assert_eq!(minx < maxx, true);
+      assert_eq!(minx < maxx, true); // todo: remove
       assert_eq!(miny < maxy, true);
 
       AABB { 
@@ -135,19 +136,18 @@ impl AABB {
    }
    
    #[inline]
-   pub fn closest_vert(self, norm: Vector2<f64>) -> Vector2<f64> {
-      //! Returns the vertex of the AABB that projects the furthest back from the normal (normalization not required).
-      if norm.x >= 0.0 {
-         if norm.y >= 0.0 {
-            self.min
+   pub fn broaden(self, dir: Vector2<f64>) -> AABB {
+      if dir.x >= 0.0 {
+         if dir.y >= 0.0 {
+            AABB { min: self.min, max: self.max + dir }
          } else {
-            self.minx_maxy()
+            AABB { min: cgmath::vec2(self.min.x, self.min.y + dir.y), max: cgmath::vec2(self.max.x + dir.x, self.max.y) }
          }
       } else {
-         if norm.y >= 0.0 {
-            self.maxx_miny()
+         if dir.y >= 0.0 {
+            AABB { min: cgmath::vec2(self.min.x + dir.x, self.min.y), max: cgmath::vec2(self.max.x, self.max.y + dir.y) }
          } else {
-            self.max
+            AABB { min: self.min + dir, max: self.max }
          }
       }
    }
@@ -264,7 +264,21 @@ fn poly_aabb_test(poly: &Poly, aabb: &AABB) -> bool {
       // given the aabbs intersect, the polygon must have the seperating axis
       for i in 0..poly.norms.len() {
          let n = poly.norms[i];
-         if n.dot(aabb.closest_vert(n) - poly.verts[i]) > 0.0 {
+         let closest = 
+            if n.x >= 0.0 {
+               if n.y >= 0.0 {
+                  aabb.min
+               } else {
+                  aabb.minx_maxy()
+               }
+            } else {
+               if n.y >= 0.0 {
+                  aabb.maxx_miny()
+               } else {
+                  aabb.max
+               }
+            };
+         if n.dot(closest - poly.verts[i]) > 0.0 {
             return false // valid seperating axis found
          }
       }

@@ -1,15 +1,6 @@
 use cgmath::{ElementWise, InnerSpace, Vector2};
 use crate::inters::{Shape, Intersect, AABB, Circle, Poly};
 
-macro_rules! inv_norm {
-   ($e:expr) => {
-      if let Some(r) = $e {
-         Some((-r.0, r.1))
-      } else {
-         None
-      }
-   };
-}
 
 #[derive(Debug, Clone)]
 pub struct Body {
@@ -21,9 +12,11 @@ pub struct Body {
    pub aabb: AABB,
    /// Velocity
    pub vel: Vector2<f64>,
+   /// Whether the object is *relatively* fast moving.
+   pub bullet: bool,
 }
 impl Body {
-   pub fn new(shapes: Vec<Shape>) -> Body {
+   pub fn new(shapes: Vec<Shape>, pos: Vector2<f64>, vel: Vector2<f64>, is_bullet: bool) -> Body {
       let (mut ix, mut iy, mut ax, mut ay) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
       for s in shapes.iter() {
          let aabb = s.get_aabb();
@@ -32,15 +25,27 @@ impl Body {
          if aabb.min.y < iy { iy = aabb.min.y; }
          if aabb.max.y > ay { ay = aabb.max.y; }
       }
-      Body { pos: cgmath::vec2(0.0, 0.0), vel: cgmath::vec2(0.0, 0.0), aabb: AABB::new(ix, iy, ax, ay), shapes }
+      Body { pos, vel, aabb: AABB::new(ix, iy, ax, ay).translate(pos), shapes, bullet: is_bullet }
+   }
+
+   pub fn get_broad_aabb(&self) -> AABB {
+      self.aabb.translate(self.pos).broaden(self.vel)
+   }
+   pub fn get_shape_broad_aabb(&self, shape: usize) -> AABB {
+      self.shapes[shape].get_aabb().translate(self.pos).broaden(self.vel)
+   }
+
+   pub fn translate(&mut self, offset: Vector2<f64>) {
+      self.pos = self.pos + offset;
+      self.aabb = self.aabb.translate(offset);
    }
 }
 
 
-// ---------- Approximate Sweep Bounding Tests ---------- //
+// ---------- Sweep Helper Functions ---------- //
 
-#[inline]
-fn aabb_circle_approx_sweep(vel: Vector2<f64>, unit_vel: Vector2<f64>, aabb: &AABB, o: Vector2<f64>, rad: f64) -> bool {
+#[inline(always)]
+fn aabb_circle_approx_sweep(vel: Vector2<f64>, unit_vel: Vector2<f64>, aabb: &AABB, o: Vector2<f64>, rad: f64) -> bool { // 4ns
    let (c, l, r) = if vel.x >= 0.0 {
       if vel.y >= 0.0 {
          (aabb.max, aabb.maxx_miny(), aabb.minx_maxy())
@@ -58,8 +63,8 @@ fn aabb_circle_approx_sweep(vel: Vector2<f64>, unit_vel: Vector2<f64>, aabb: &AA
    && (l - o).perp_dot(unit_vel) < rad
    && (r - o).perp_dot(unit_vel) > -rad
 }
-#[inline]
-fn aabb_aabb_approx_sweep(vel_f1t2: Vector2<f64>, aabb1: &AABB, aabb2: &AABB, diff_p1p2: Vector2<f64>) -> bool {
+#[inline(always)]
+fn aabb_aabb_approx_sweep(vel_f1t2: Vector2<f64>, aabb1: &AABB, aabb2: &AABB, diff_p1p2: Vector2<f64>) -> bool { // 5ns
    let (c1c2, l1r2, r1l2) = if vel_f1t2.x >= 0.0 {
       if vel_f1t2.y >= 0.0 {
          (aabb2.min - aabb1.max, aabb2.maxx_miny() - aabb1.minx_maxy(), aabb2.minx_maxy() - aabb1.maxx_miny())
@@ -77,11 +82,20 @@ fn aabb_aabb_approx_sweep(vel_f1t2: Vector2<f64>, aabb1: &AABB, aabb2: &AABB, di
    && (r1l2 + diff_p1p2).perp_dot(vel_f1t2) < 0.0
    && (l1r2 + diff_p1p2).perp_dot(vel_f1t2) > 0.0
 }
+#[inline(always)]
+fn line_query_mod(rv: Vector2<f64>, d_v: Vector2<f64>, d_o: Vector2<f64>) -> Option<f64> {
+   //! Optimised line-line query function, assuming non-colinearity and a valid seperating axis of d_v for rv
+   let dot = rv.x * d_v.y - d_v.x * rv.y;
+   let u = (rv.x * d_o.y - rv.y * d_o.x) / dot;
+   if u < 0.0 || u > 1.0 { return None }
+   Some((d_v.x * d_o.y - d_v.y * d_o.x) / dot)
+}
 
 
 // ---------- Sweep ---------- //
+// note: perf timings are for my machine specifically, as reference for a low-end, modern processor (Ryzen 3200G, stock clock speed)
 
-fn aabb_aabb_swept(b1: &Body, a1: &AABB, b2: &Body, a2: &AABB, t: f64) -> Option<(Vector2<f64>, f64)> { // ~12ns
+fn aabb_aabb_sweep(b1: &Body, a1: &AABB, b2: &Body, a2: &AABB, t: f64) -> Option<(f64, Vector2<f64>)> { // ~12ns
    let rv = (b1.vel - b2.vel).mul_element_wise(t);
    let p1p2 = b2.pos - b1.pos;
    let (dx_entry, dx_exit, dy_entry, dy_exit): (f64, f64, f64, f64);
@@ -127,59 +141,52 @@ fn aabb_aabb_swept(b1: &Body, a1: &AABB, b2: &Body, a2: &AABB, t: f64) -> Option
    } else {
       if tx_entry > ty_entry {
          if tx_entry > 0.0 {
-            Some((cgmath::vec2(1.0, 0.0), entry))
+            Some((entry, cgmath::vec2(1.0, 0.0)))
          } else {
-            Some((cgmath::vec2(-1.0, 0.0), entry))
+            Some((entry, cgmath::vec2(-1.0, 0.0)))
          }
       } else {
          if ty_entry > 0.0 {
-            Some((cgmath::vec2(0.0, 1.0), entry))
+            Some((entry, cgmath::vec2(0.0, 1.0)))
          } else {
-            Some((cgmath::vec2(0.0, -1.0), entry))
+            Some((entry, cgmath::vec2(0.0, -1.0)))
          }
       }
    }
 }
-fn circle_circle_swept(b1: &Body, c1: &Circle, b2: &Body, c2: &Circle, t: f64) -> Option<(Vector2<f64>, f64)> { // ~31ns
+fn circle_circle_sweep(b1: &Body, c1: &Circle, b2: &Body, c2: &Circle, t: f64) -> Option<(f64, Vector2<f64>)> { // ~11ns(f) - ~32ns(s)
    let rv = (b1.vel - b2.vel).mul_element_wise(t);
    let rv_mag = rv.magnitude() as f64;
    let unit = rv.div_element_wise(rv_mag);
    let srad = c1.rad + c2.rad;
 
-   /*let lat_diff = c1c2.perp_dot(unit).abs();
-   if lat_diff > srad { return None } // check if circles are too far apart along vel
-   let d = c1c2.dot(unit) - (srad * srad - lat_diff * lat_diff).sqrt();
-   let td = d / rv.dot(unit) as f64;
-   if td >= 1.0 || td < 0.0 {
-      None
-   } else {
-      Some(((rv.mul_element_wise(td) - c1c2).div_element_wise(srad), td))
-   }*/
    let c2c1 = (b1.pos + c1.pos) - (b2.pos + c2.pos);
    let dot = unit.dot(c2c1) as f64;
    let x = srad * srad + dot * dot - c2c1.magnitude2() as f64;
-   let d = -(dot + x.sqrt()) / rv_mag;
-   if x > 0.0 && d >= 0.0 && d <= 1.0 {
-      Some(((c2c1 + rv.mul_element_wise(d)).div_element_wise(srad), d))
-   } else {
-      None
+   if x > 0.0 {
+      let d = -(dot + x.sqrt()) / rv_mag;
+      if d >= 0.0 && d <= 1.0 {
+         return Some((d, (c2c1 + rv.mul_element_wise(d)).div_element_wise(srad)))
+      }
    }
+   None
 }
-fn poly_poly_swept(b1: &Body, p1: &Poly, b2: &Body, p2: &Poly, t: f64) -> Option<(Vector2<f64>, f64)> {
+fn poly_poly_sweep(b1: &Body, p1: &Poly, b2: &Body, p2: &Poly, t: f64) -> Option<(f64, Vector2<f64>)> {
    let dpos = b2.pos - b1.pos;
-   let rv2 = (b1.vel - b2.vel).mul_element_wise(t);
-   /* if !aabb_aabb_approx_sweep(rv2, &p1.aabb, &p2.aabb, dpos) {
-      println!("aabb approx tripped");
-      return None
-   } */
+   let rv1 = (b1.vel - b2.vel).mul_element_wise(t);
    
-   let mut immenence2 = f64::MAX; // distance to collision squared
+   // bullets should be swept-checked (extra ~5ns)
+   if (b1.bullet || b2.bullet) && !aabb_aabb_approx_sweep(rv1, &p1.aabb, &p2.aabb, dpos) {
+      return None
+   }
+   
+   let mut immenence = f64::MAX; // time to collision
    let mut imminent_norm = cgmath::vec2(0.0, 0.0); // norm of collision
    
-   let rv1 = -rv2;
+   let rv2 = -rv1;
    'p1f: for i in 0..p1.norms.len() {
       let n = p1.norms[i];
-      if n.dot(rv1) > 0.0 {
+      if n.dot(rv2) >= 0.0 {
          // skip if normal faces a similar direction to velocity (including perp)
          continue;
       }
@@ -201,10 +208,10 @@ fn poly_poly_swept(b1: &Body, p1: &Poly, b2: &Body, p2: &Poly, t: f64) -> Option
 
       // get the time between collision of vert and line, if any
       let cv = p2.verts[cprojv] + dpos;
-      if let Some(v) = super::inters::line_line_query(cv, cv + rv1, p1.verts[i], p1.verts[i+1]) {
+      if let Some(v) = super::inters::line_line_query(cv, cv + rv2, p1.verts[i], p1.verts[i+1]) {
          let dist2 = (v - cv).magnitude2() as f64;
-         if dist2 < immenence2 {
-            immenence2 = dist2;
+         if dist2 < immenence {
+            immenence = dist2;
             imminent_norm = n;
          }
       }
@@ -212,47 +219,39 @@ fn poly_poly_swept(b1: &Body, p1: &Poly, b2: &Body, p2: &Poly, t: f64) -> Option
 
    'p2f: for i in 0..p2.norms.len() {
       let n = p2.norms[i];
-      if n.dot(rv2) > 0.0 {
-         // skip if normal faces a similar direction to velocity (including perp)
-         continue;
-      }
-
-      let vprojd = n.dot(p2.verts[i] + dpos) as f64; // seperating axis dot
-      let mut cprojs = f64::MAX; // closest dot
-      let mut cprojv = usize::MAX; // closest vert index
-
-      // SAT, store closest vert
+      if n.dot(rv1) >= 0.0 { continue; }
+      let vprojd = n.dot(p2.verts[i] + dpos) as f64;
+      let mut cprojs = f64::MAX;
+      let mut cprojv = usize::MAX;
       for v in 0..p1.norms.len() {
          let proj = n.dot(p1.verts[v]) as f64;
-         if proj < vprojd { // invalid seperating axis
+         if proj < vprojd {
             continue 'p2f;
-         } else if proj < cprojs { // closer vert found
+         } else if proj < cprojs {
             cprojs = proj;
             cprojv = v;
          }
       }
-
-      // get the time between collision of vert and line, if any
       let cv = p1.verts[cprojv] - dpos;
-      if let Some(v) = super::inters::line_line_query(cv, cv + rv2, p2.verts[i], p2.verts[i+1]) {
+      if let Some(v) = super::inters::line_line_query(cv, cv + rv1, p2.verts[i], p2.verts[i+1]) {
          let dist2 = (v - cv).magnitude2() as f64;
-         if dist2 < immenence2 {
-            immenence2 = dist2;
+         if dist2 < immenence {
+            immenence = dist2;
             imminent_norm = -n;
          }
       }
    }
 
-   if immenence2 != f64::MAX {
-      Some((imminent_norm, immenence2.sqrt()))
+   if immenence < 1.0 {
+      Some((immenence, imminent_norm))
    } else {
       println!("return tripped");
       None
    }
 }
 
-fn circle_aabb_swept(b1: &Body, circle: &Circle, b2: &Body, aabb: &AABB, t: f64) -> Option<(Vector2<f64>, f64)> { // ~34ns
-   // Checks against expanded AABB, if it's a corner case, circle test to get collision point, if any
+fn circle_aabb_sweep(b1: &Body, circle: &Circle, b2: &Body, aabb: &AABB, t: f64) -> Option<(f64, Vector2<f64>)> { // ~13ns(!c) - ~34ns
+   // Checks against expanded AABB, if it's a corner case, circle test to get collision point, if any (bullet checks won't be worth it as the norm of vel isn't precalculated)
    let p1p2 = b2.pos - b1.pos;
    let rv = (b1.vel - b2.vel).mul_element_wise(t);
    let seg_origin = circle.pos - p1p2; // relative to aabb
@@ -266,18 +265,18 @@ fn circle_aabb_swept(b1: &Body, circle: &Circle, b2: &Body, aabb: &AABB, t: f64)
       if differentiator >= -circle.rad && differentiator < aabb_height + circle.rad {
          if differentiator < 0.0 {
             return if let Some(result2) = (Circle { rad: circle.rad, pos: aabb.min }).line_query(seg_origin, seg_end) {
-               return Some(((result2 - aabb.min).div_element_wise(circle.rad), (result2.x - seg_origin.x) / rv.x))
+               return Some(((result2.x - seg_origin.x) / rv.x, (result2 - aabb.min).div_element_wise(circle.rad)))
             } else {
                None
             }
          } else if differentiator > aabb_height {
             return if let Some(result2) = (Circle { rad: circle.rad, pos: aabb.minx_maxy() }).line_query(seg_origin, seg_end) {
-               Some(((result2 - aabb.minx_maxy()).div_element_wise(circle.rad), (result2.x - seg_origin.x) / rv.x))
+               Some(((result2.x - seg_origin.x) / rv.x, (result2 - aabb.minx_maxy()).div_element_wise(circle.rad)))
             } else {
                None
             }
          } else {
-            return Some((cgmath::vec2(-1.0, 0.0), -diffx / rv.x))
+            return Some((-diffx / rv.x, cgmath::vec2(-1.0, 0.0)))
          }
       }
    } else if rv.x < 0.0 && seg_origin.x > aabb.max.x + circle.rad && seg_end.x < aabb.max.x + circle.rad { // RIGHT
@@ -287,18 +286,18 @@ fn circle_aabb_swept(b1: &Body, circle: &Circle, b2: &Body, aabb: &AABB, t: f64)
       if differentiator >= -circle.rad && differentiator < aabb_height + circle.rad {
          if differentiator < 0.0 {
             return if let Some(result2) = (Circle { rad: circle.rad, pos: aabb.max }).line_query(seg_origin, seg_end) {
-               Some(((result2 - aabb.max).div_element_wise(circle.rad), (result2.x - seg_origin.x) / rv.x))
+               Some(((result2.x - seg_origin.x) / rv.x, (result2 - aabb.max).div_element_wise(circle.rad)))
             } else {
                None
             }
          } else if differentiator > aabb_height {
             return if let Some(result2) = (Circle { rad: circle.rad, pos: aabb.maxx_miny() }).line_query(seg_origin, seg_end) {
-               return Some(((result2 - aabb.maxx_miny()).div_element_wise(circle.rad), (result2.x - seg_origin.x) / rv.x))
+               return Some(((result2.x - seg_origin.x) / rv.x, (result2 - aabb.maxx_miny()).div_element_wise(circle.rad)))
             } else {
                None
             }
          } else {
-            return Some((cgmath::vec2(1.0, 0.0), diffx / -rv.x))
+            return Some((diffx / -rv.x, cgmath::vec2(1.0, 0.0)))
          }
       }
    }
@@ -309,19 +308,19 @@ fn circle_aabb_swept(b1: &Body, circle: &Circle, b2: &Body, aabb: &AABB, t: f64)
       if differentiator >= -circle.rad && differentiator < aabb_width + circle.rad {
          if differentiator < 0.0 {
             return if let Some(result2) = (Circle { rad: circle.rad, pos: aabb.min }).line_query(seg_origin, seg_end) {
-               return Some(((result2 - aabb.min).div_element_wise(circle.rad), (result2.y - seg_origin.y) / rv.y))
+               return Some(((result2.y - seg_origin.y) / rv.y, (result2 - aabb.min).div_element_wise(circle.rad)))
             } else {
                None
             }
          } else if differentiator > aabb_width {
             return if let Some(result2) = (Circle { rad: circle.rad, pos: aabb.maxx_miny() }).line_query(seg_origin, seg_end) {
 
-               Some(((result2 - aabb.maxx_miny()).div_element_wise(circle.rad), (result2.y - seg_origin.y) / rv.y))
+               Some(((result2.y - seg_origin.y) / rv.y, (result2 - aabb.maxx_miny()).div_element_wise(circle.rad)))
             } else {
                None
             }
          } else {
-            return Some((cgmath::vec2(0.0, -1.0), diffy / -rv.y))
+            return Some((diffy / -rv.y, cgmath::vec2(0.0, -1.0)))
          }
       }
    } else if rv.y < 0.0 && seg_origin.y > aabb.max.y + circle.rad && seg_end.y < aabb.max.y + circle.rad { // TOP
@@ -331,50 +330,59 @@ fn circle_aabb_swept(b1: &Body, circle: &Circle, b2: &Body, aabb: &AABB, t: f64)
       if differentiator >= -circle.rad && differentiator < aabb_width + circle.rad {
          if differentiator < 0.0 {
             return if let Some(result2) = (Circle { rad: circle.rad, pos: aabb.max }).line_query(seg_origin, seg_end) {
-               Some(((result2 - aabb.max).div_element_wise(circle.rad), (result2.y - seg_origin.y) / rv.y))
+               Some(((result2.y - seg_origin.y) / rv.y, (result2 - aabb.max).div_element_wise(circle.rad)))
             } else {
                None
             }
          } else if differentiator > aabb_width {
             return if let Some(result2) = (Circle { rad: circle.rad, pos: aabb.minx_maxy() }).line_query(seg_origin, seg_end) {
-               return Some(((result2 - aabb.minx_maxy()).div_element_wise(circle.rad), (result2.y - seg_origin.y) / rv.y))
+               return Some(((result2.y - seg_origin.y) / rv.y, (result2 - aabb.minx_maxy()).div_element_wise(circle.rad)))
             } else {
                None
             }
          } else {
-            return Some((cgmath::vec2(0.0, 1.0), -diffy / rv.y))
+            return Some((-diffy / rv.y, cgmath::vec2(0.0, 1.0)))
          }
       }
    }
    None
 }
-fn aabb_poly_swept(b1: &Body, aabb: &AABB, b2: &Body, poly: &Poly, t: f64) -> Option<(Vector2<f64>, f64)> {
-   let rv1 = (b1.vel - b2.vel).mul_element_wise(t); // relative veocity to b1/a1
-   let dpos = b2.pos - b1.pos; // offset of b2 from b1
-   if !aabb_aabb_approx_sweep(rv1, &aabb, &poly.aabb, dpos) {
+fn aabb_poly_sweep(b1: &Body, aabb: &AABB, b2: &Body, poly: &Poly, t: f64) -> Option<(f64, Vector2<f64>)> {
+   let rv1 = (b1.vel - b2.vel).mul_element_wise(t);
+   let aabb = aabb.translate(b1.pos - b2.pos);
+   println!("{:?}", aabb);
+
+   // bullets should be swept-checked (extra ~5ns)
+   if (b1.bullet || b2.bullet) && !aabb_aabb_approx_sweep(rv1, &aabb, &poly.aabb, cgmath::vec2(0.0, 0.0)) {
       return None
    }
 
-   let mut immenence2 = f64::MAX; // distance to collision squared
+   let mut immenence = f64::MAX; // time until collision
    let mut imminent_norm = cgmath::vec2(0.0, 0.0); // norm of collision
-   
-   let len = poly.norms.len();
-   for i in 0..len {
+   for i in 0..poly.norms.len() {
       let n = poly.norms[i];
-      if n.dot(rv1) > 0.0 { // check that norm and vel face opposite each other
+      if n.dot(rv1) >= 0.0 { continue; }
+      let v = poly.verts[i];
+      let closest = if n.x >= 0.0 {
+         if n.y >= 0.0 {
+               aabb.min
+            } else {
+               aabb.minx_maxy()
+            }
+         } else {
+            if n.y >= 0.0 {
+               aabb.maxx_miny()
+            } else {
+               aabb.max
+            }
+         };
+      let ndotv = n.dot(v) as f64;
+      if n.dot(closest) < ndotv || ndotv > n.dot(closest + rv1) { // check whether this is a seperating axis
          continue;
       }
-
-      let closest = aabb.closest_vert(n) - dpos;
-      if n.dot(closest) < n.dot(poly.verts[i]) { // check whether this is a seperating axis
-         continue;
-      }
-      
-      // get the time between collision of vert and line, if any
-      if let Some(v) = super::inters::line_line_query(closest, closest + rv1, poly.verts[i], poly.verts[(i+1)%len]) {
-         let dist2 = (v - closest).magnitude2() as f64;
-         if dist2 < immenence2 {
-            immenence2 = dist2;
+      if let Some(t) = line_query_mod(rv1, poly.verts[i+1] - poly.verts[i], closest - poly.verts[i]) {
+         if t < immenence {
+            immenence = t;
             imminent_norm = n;
          }
       }
@@ -388,31 +396,27 @@ fn aabb_poly_swept(b1: &Body, aabb: &AABB, b2: &Body, poly: &Poly, t: f64) -> Op
             closest = *v;
          }
       }
-
-      if closest.x <= aabb.min.x - dpos.x {
-         // get the time between collision of vert and line, if any
-         if let Some(v) = super::inters::line_line_query(closest, closest + rv2, aabb.min, aabb.minx_maxy()) {
-            let dist2 = (v - closest).magnitude2() as f64;
-            if dist2 < immenence2 {
-               immenence2 = dist2;
+      if closest.x <= aabb.min.x && closest.x + rv2.x > aabb.min.x {
+         if let Some(t) = line_query_mod(rv2, aabb.minx_maxy() - aabb.min, aabb.min - closest) {
+            if t < immenence {
+               immenence = t;
                imminent_norm = cgmath::vec2(1.0, 0.0); // reversed
             }
          }
       }
    } else if rv2.x < 0.0 { // RIGHT
+      println!("here -x");
       let mut closest = cgmath::vec2(f64::MAX, 0.0);
       for v in poly.verts.iter() {
          if v.x < closest.x {
             closest = *v;
          }
       }
-
-      if closest.x >= aabb.max.x - dpos.x {
-         // get the time between collision of vert and line, if any
-         if let Some(v) = super::inters::line_line_query(closest, closest + rv2, aabb.maxx_miny(), aabb.max) {
-            let dist2 = (v - closest).magnitude2() as f64;
-            if dist2 < immenence2 {
-               immenence2 = dist2;
+      println!("closest: {:?}", closest);
+      if closest.x >= aabb.max.x && closest.x + rv2.x < aabb.max.x {
+         if let Some(t) = line_query_mod(rv2, aabb.maxx_miny() - aabb.max, aabb.max - closest) {
+            if t < immenence {
+               immenence = t;
                imminent_norm = cgmath::vec2(-1.0, 0.0); // reversed
             }
          }
@@ -425,13 +429,10 @@ fn aabb_poly_swept(b1: &Body, aabb: &AABB, b2: &Body, poly: &Poly, t: f64) -> Op
             closest = *v;
          }
       }
-
-      if closest.y <= aabb.min.y - dpos.x {
-         // get the time between collision of vert and line, if any
-         if let Some(v) = super::inters::line_line_query(closest, closest + rv2, aabb.min, aabb.maxx_miny()) {
-            let dist2 = (v - closest).magnitude2() as f64;
-            if dist2 < immenence2 {
-               immenence2 = dist2;
+      if closest.y <= aabb.min.y && closest.y + rv2.y > aabb.min.y {
+         if let Some(t) = line_query_mod(rv2, aabb.maxx_miny() - aabb.min, aabb.min - closest) {
+            if t < immenence {
+               immenence = t;
                imminent_norm = cgmath::vec2(0.0, 1.0); // reversed
             }
          }
@@ -443,33 +444,32 @@ fn aabb_poly_swept(b1: &Body, aabb: &AABB, b2: &Body, poly: &Poly, t: f64) -> Op
             closest = *v;
          }
       }
-
-      if closest.y >= aabb.min.y - dpos.x {
-         // get the time between collision of vert and line, if any
-         if let Some(v) = super::inters::line_line_query(closest, closest + rv2, aabb.minx_maxy(), aabb.max) {
-            let dist2 = (v - closest).magnitude2() as f64;
-            if dist2 < immenence2 {
-               immenence2 = dist2;
+      if closest.y >= aabb.max.y && closest.y + rv2.y < aabb.max.y {
+         if let Some(t) = line_query_mod(rv2, aabb.minx_maxy() - aabb.max, aabb.max - closest) {
+            if t < immenence {
+               immenence = t;
                imminent_norm = cgmath::vec2(0.0, -1.0); // reversed
             }
          }
       }
    }
-
-   if immenence2 != f64::MAX {
-      Some((imminent_norm, immenence2.sqrt()))
+   println!("immenence: {}, immenent_norm: {:?}", immenence, imminent_norm);
+   if immenence < 1.0 {
+      Some((immenence, imminent_norm))
    } else {
       None
    }
 }
-fn circle_poly_swept(b1: &Body, circle: &Circle, b2: &Body, poly: &Poly, t: f64) -> Option<(Vector2<f64>, f64)> {
+fn circle_poly_sweep(b1: &Body, circle: &Circle, b2: &Body, poly: &Poly, t: f64) -> Option<(f64, Vector2<f64>)> { // 18(s)-36(s)ns (n=6)
    let rv = (b1.vel - b2.vel).mul_element_wise(t);
    let rv_mag = rv.magnitude() as f64;
    let unit_rv = rv.div_element_wise(rv_mag);
    let o = b1.pos - b2.pos + circle.pos;
-   /*if !aabb_circle_approx_sweep(rv, unit_rv, &poly.aabb, o, circle.rad) {
+
+   // the expensive operations must be performed regardless, thus bullets should be swept-checked (extra ~4ns)
+   if (b1.bullet || b2.bullet) && !aabb_circle_approx_sweep(rv, unit_rv, &poly.aabb, o, circle.rad) {
       return None
-   }*/
+   }
    
    let len = poly.norms.len();
    let b = o + rv;
@@ -493,13 +493,13 @@ fn circle_poly_swept(b1: &Body, circle: &Circle, b2: &Body, poly: &Poly, t: f64)
                if x > 0.0 { // tangential and passing lines are not collisions
                   let d = -udotvo - x.sqrt();
                   return if d < rv_mag { // impale/fallshort : success/guaranteed failure
-                     Some(((unit_rv.mul_element_wise(d) - vo).div_element_wise(circle.rad), d))
+                     Some((d, (unit_rv.mul_element_wise(d) - vo).div_element_wise(circle.rad)))
                   } else {
                      None
                   }
                }
             } else if t <= 1.0 {
-               return Some((n, vo.perp_dot(diff) / diff.perp_dot(rv)))
+               return Some((vo.perp_dot(diff) / diff.perp_dot(rv), n))
             } else {
                let v1o = o - poly.verts[i+1];
                let udotv1o = unit_rv.dot(v1o) as f64;
@@ -507,7 +507,7 @@ fn circle_poly_swept(b1: &Body, circle: &Circle, b2: &Body, poly: &Poly, t: f64)
                if x > 0.0 {
                   let d = -udotv1o - x.sqrt();
                   return if d < rv_mag {
-                     Some(((unit_rv.mul_element_wise(d) - v1o).div_element_wise(circle.rad), d))
+                     Some((d, (unit_rv.mul_element_wise(d) - v1o).div_element_wise(circle.rad)))
                   } else {
                      None
                   }
@@ -519,211 +519,91 @@ fn circle_poly_swept(b1: &Body, circle: &Circle, b2: &Body, poly: &Poly, t: f64)
    None // circle is inside poly, no collision occurs
 }
 
-pub trait Sweep {
-   fn get_broad_aabb(&self, b: &Body, t: f64) -> AABB;
-
-   fn circle_sweep(&self, b1: &Body, circle: &Circle, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)>;
-   fn aabb_sweep(&self, b1: &Body, aabb: &AABB, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)>;
-   fn poly_sweep(&self, b1: &Body, poly: &Poly, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)>;
-
-   fn shape_sweep(&self, b1: &Body, shape: &Shape, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)>;
-}
-
-impl Sweep for Circle {
-   fn get_broad_aabb(&self, b: &Body, t: f64) -> AABB {
-      let vel = b.vel.mul_element_wise(t);
-      if vel.x >= 0.0 {
-         if vel.y >= 0.0 {
-            AABB { min: self.pos.sub_element_wise(self.rad), max: self.pos.add_element_wise(self.rad) + vel }
-         } else {
-            AABB::new(self.pos.x - self.rad, self.pos.y - self.rad + vel.y, self.pos.x + self.rad + vel.x, self.pos.y + self.rad)
-         }
-      } else {
-         if vel.y >= 0.0 {
-            AABB::new(self.pos.x - self.rad + vel.x, self.pos.y - self.rad, self.pos.x + self.rad, self.pos.y + self.rad + vel.y)
-         } else {
-            AABB { min: self.pos.sub_element_wise(self.rad) + vel, max: self.pos.add_element_wise(self.rad) }
-         }
-      }
-   }
-
-   #[inline]
-   fn circle_sweep(&self, b1: &Body, circle: &Circle, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
-      circle_circle_swept(b1, self, b2, circle, t)
-   }
-   #[inline]
-   fn aabb_sweep(&self, b1: &Body, aabb: &AABB, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
-      circle_aabb_swept(b1, self, b2, aabb, t)
-   }
-   #[inline]
-   fn poly_sweep(&self, b1: &Body, poly: &Poly, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
-      circle_poly_swept(b1, self, b2, poly, t)
-   }
-
-   fn shape_sweep(&self, b1: &Body, shape: &Shape, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
-      match shape {
-         Shape::Circle(c) => self.circle_sweep(b1, c, b2, t),
-         Shape::Aabb(aabb) => self.aabb_sweep(b1, aabb, b2, t),
-         Shape::Poly(poly) => self.poly_sweep(b1, poly, b2, t),
-      }
-   }
-}
-impl Sweep for AABB {
-   fn get_broad_aabb(&self, b: &Body, t: f64) -> AABB {
-      let vel = b.vel.mul_element_wise(t);
-      if vel.x >= 0.0 {
-         if vel.y >= 0.0 {
-            AABB { min: self.min, max: self.max + vel }
-         } else {
-            AABB::new(self.min.x, self.min.y + vel.y, self.max.x + vel.x, self.max.y)
-         }
-      } else {
-         if vel.y >= 0.0 {
-            AABB::new(self.min.x + vel.x, self.min.y, self.max.x, self.max.y + vel.y)
-         } else {
-            AABB { min: self.min + vel, max: self.max }
-         }
-      }
-   }
-
-   #[inline]
-   fn circle_sweep(&self, b1: &Body, circle: &Circle, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
-      inv_norm!(circle_aabb_swept(b2, circle, b1, self, t))
-   }
-   #[inline]
-   fn aabb_sweep(&self, b1: &Body, aabb: &AABB, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
-      aabb_aabb_swept(b1, self, b2, aabb, t)
-   }
-   #[inline]
-   fn poly_sweep(&self, b1: &Body, poly: &Poly, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
-      aabb_poly_swept(b1, self, b2, poly, t)
-   }
-
-   fn shape_sweep(&self, b1: &Body, shape: &Shape, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
-      match shape {
-         Shape::Circle(c) => self.circle_sweep(b1, c, b2, t),
-         Shape::Aabb(aabb) => self.aabb_sweep(b1, aabb, b2, t),
-         Shape::Poly(poly) => self.poly_sweep(b1, poly, b2, t),
-      }
-   }
-}
-impl Sweep for Poly {
-   fn get_broad_aabb(&self, b: &Body, t: f64) -> AABB {
-      let vel = b.vel.mul_element_wise(t);
-      if vel.x >= 0.0 {
-         if vel.y >= 0.0 {
-            AABB { min: self.aabb.min, max: self.aabb.max + vel }
-         } else {
-            AABB::new(self.aabb.min.x, self.aabb.min.y + vel.y, self.aabb.max.x + vel.x, self.aabb.max.y)
-         }
-      } else {
-         if vel.y >= 0.0 {
-            AABB::new(self.aabb.min.x + vel.x, self.aabb.min.y, self.aabb.max.x, self.aabb.max.y + vel.y)
-         } else {
-            AABB { min: self.aabb.min + vel, max: self.aabb.max }
-         }
-      }
-   }
-
-   #[inline]
-   fn circle_sweep(&self, b1: &Body, circle: &Circle, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
-      inv_norm!(circle_poly_swept(b2, circle, b1, self, t))
-   }
-   #[inline]
-   fn aabb_sweep(&self, b1: &Body, aabb: &AABB, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
-      inv_norm!(aabb_poly_swept(b2, aabb, b1, self, t))
-   }
-   #[inline]
-   fn poly_sweep(&self, b1: &Body, poly: &Poly, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
-      poly_poly_swept(b1, self, b2, poly, t)
-   }
-
-   fn shape_sweep(&self, b1: &Body, shape: &Shape, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
-      match shape {
-         Shape::Circle(c) => self.circle_sweep(b1, c, b2, t),
-         Shape::Aabb(aabb) => self.aabb_sweep(b1, aabb, b2, t),
-         Shape::Poly(poly) => self.poly_sweep(b1, poly, b2, t),
-      }
-   }
-}
-impl Sweep for Shape {
-   #[inline]
-   fn get_broad_aabb(&self, b: &Body, t: f64) -> AABB {
-      match self {
-         Shape::Circle(c) => c.get_broad_aabb(b, t),
-         Shape::Aabb(aabb) => aabb.get_broad_aabb(b, t),
-         Shape::Poly(poly) => poly.get_broad_aabb(b, t),
-      }
-   }
-
-   #[inline]
-   fn circle_sweep(&self, b1: &Body, circle: &Circle, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
-      match self {
-         Shape::Circle(c) => c.circle_sweep(b1, circle, b2, t),
-         Shape::Aabb(aabb) => aabb.circle_sweep(b1, circle, b2, t),
-         Shape::Poly(poly) => poly.circle_sweep(b1, circle, b2, t),
-      }
-   }
-   #[inline]
-   fn aabb_sweep(&self, b1: &Body, aabb: &AABB, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
-      match self {
-         Shape::Circle(c) => c.aabb_sweep(b1, aabb, b2, t),
-         Shape::Aabb(aabb) => aabb.aabb_sweep(b1, aabb, b2, t),
-         Shape::Poly(poly) => poly.aabb_sweep(b1, aabb, b2, t),
-      }
-   }
-   #[inline]
-   fn poly_sweep(&self, b1: &Body, poly: &Poly, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
-      match self {
-         Shape::Circle(c) => c.poly_sweep(b1, poly, b2, t),
-         Shape::Aabb(aabb) => aabb.poly_sweep(b1, poly, b2, t),
-         Shape::Poly(poly) => poly.poly_sweep(b1, poly, b2, t),
-      }
-   }
-
-   #[inline]
-   fn shape_sweep(&self, b1: &Body, shape: &Shape, b2: &Body, t: f64) -> Option<(Vector2<f64>, f64)> {
-      match shape {
-         Shape::Circle(c) => self.circle_sweep(b1, c, b2, t),
-         Shape::Aabb(aabb) => self.aabb_sweep(b1, aabb, b2, t),
-         Shape::Poly(poly) => self.poly_sweep(b1, poly, b2, t),
-      }
-   }
-}
 
 #[derive(Debug, Clone)]
-pub struct SweptDynStatData {
+pub struct BodySweptData {
    /// Index of the colliding shape of body.
    pub b1_shape: usize,
    /// Index of the colliding shape of stat.
    pub b2_shape: usize,
-   /// Collision normal from shape of b2.
-   pub norm: Vector2<f64>,
    /// Fraction of bodys' velocity until collision.
    pub travel: f64,
+   /// Collision normal from shape of b2.
+   pub norm: Vector2<f64>,
 }
 
-pub fn body_body_swept(b1: &Body, b2: &Body, t: f64) -> Option<SweptDynStatData> {
-   let mut result: Option<SweptDynStatData> = None;
-   let mut travel = f64::MAX;
-   for (x, s1) in b1.shapes.iter().enumerate() {
-      for (y, s2) in b2.shapes.iter().enumerate() {
-         if s1.get_broad_aabb(b1, t).aabb_test(&s2.get_broad_aabb(b2, t)) {
-            if let Some((n, t)) = s1.shape_sweep(b1, s2, b2, t) {
-               if t < travel {
-                  travel = t;
-                  result = Some(SweptDynStatData {
-                     b1_shape: x,
-                     b2_shape: y,
-                     norm: n,
-                     travel: t,
-                  })
+macro_rules! inv_norm {
+   ($e:expr) => {
+      if let Some(r) = $e {
+         Some((r.0, -r.1))
+      } else {
+         None
+      }
+   };
+}
+pub fn shape_shape_sweep(b1: &Body, s1: usize, b2: &Body, s2: usize, t: f64) -> Option<(f64, Vector2<f64>)> {
+   let s1s = &b1.shapes[s1];
+   let s2s = &b2.shapes[s2];
+   match s1s {
+      Shape::Circle(c) => match s2s {
+         Shape::Circle(c2) => circle_circle_sweep(b1, c, b2, c2, t),
+         Shape::Aabb(aabb) => circle_aabb_sweep(b1, c, b2, aabb, t),
+         Shape::Poly(poly) => circle_poly_sweep(b1, c, b2, poly, t),
+      },
+      Shape::Aabb(aabb) => match s2s {
+         Shape::Circle(c) => inv_norm!(circle_aabb_sweep(b2, c, b1, aabb, t)),
+         Shape::Aabb(aabb2) => aabb_aabb_sweep(b1, aabb, b2, aabb2, t),
+         Shape::Poly(poly) => aabb_poly_sweep(b1, aabb, b2, poly, t),
+      },
+      Shape::Poly(poly) => match s2s {
+         Shape::Circle(c) => inv_norm!(circle_poly_sweep(b2, c, b1, poly, t)),
+         Shape::Aabb(aabb) => inv_norm!(aabb_poly_sweep(b2, aabb, b1, poly, t)),
+         Shape::Poly(poly2) => poly_poly_sweep(b1, poly, b2, poly2, t),
+      },
+   }
+}
+pub fn body_body_swept(b1: &Body, b2: &Body, t: f64) -> Option<BodySweptData> {
+   if b1.get_broad_aabb().aabb_test(&b2.get_broad_aabb()) {
+      if b1.shapes.len() == 1 && b2.shapes.len() == 1 { // single shape optimisation
+         if let Some((t, n)) = shape_shape_sweep(b1, 0, b2, 0, t) {
+            Some(BodySweptData {
+               b1_shape: 0,
+               b2_shape: 0,
+               travel: t,
+               norm: n,
+            })
+         } else {
+            None
+         }
+      } else {
+         let mut result: Option<BodySweptData> = None;
+         let mut travel = f64::MAX;
+         let b1_aabb = &b1.get_broad_aabb();
+         let b2_aabb = &b2.get_broad_aabb();
+
+         let mut f2 = Vec::new();
+         f2.extend((0..b2.shapes.len()).filter(|y| b2.get_shape_broad_aabb(*y).aabb_test(b1_aabb)));
+
+         for x in (0..b1.shapes.len()).filter(|x| b1.get_shape_broad_aabb(*x).aabb_test(b2_aabb)) {
+            for y in f2.iter() {
+               if let Some((t, n)) = shape_shape_sweep(b1, x, b2, *y, t) {
+                  if t < travel {
+                     travel = t;
+                     result = Some(BodySweptData {
+                        b1_shape: x,
+                        b2_shape: *y,
+                        norm: n,
+                        travel: t,
+                     })
+                  }
                }
             }
          }
+         result
       }
+   } else {
+      None
    }
-   result
 }
 
 #[cfg(test)]
@@ -762,68 +642,106 @@ mod tests {
    #[test]
    fn aabb_aabb_swept_test() {
       let aabb1 = AABB::new(0.0, 0.0, 1.0, 1.0);
-      let b1 = Body { aabb: aabb1, shapes: vec![Shape::Aabb(aabb1)], pos: vec2(0.0, 0.0), vel: vec2(1.0, 1.0) };
+      let b1 = Body { aabb: aabb1, shapes: vec![Shape::Aabb(aabb1)], pos: vec2(0.0, 0.0), vel: vec2(1.0, 1.0), bullet: false };
       let aabb2 = AABB::new(2.0, 1.0, 3.0, 2.0);
-      let b2 = Body { aabb: aabb2, shapes: vec![Shape::Aabb(aabb2)], pos: vec2(0.2, -0.5), vel: vec2(-1.0, 0.0) };
+      let b2 = Body { aabb: aabb2, shapes: vec![Shape::Aabb(aabb2)], pos: vec2(0.2, -0.5), vel: vec2(-1.0, 0.0), bullet: false };
 
-      assert_eq!(aabb_aabb_swept(&b1, &aabb1, &b2, &aabb2, 1.0).is_some(), true);
-      assert_eq!(aabb_aabb_swept(&b1, &aabb1, &b2, &aabb2, 100.0).is_some(), true);
-      assert_eq!(aabb_aabb_swept(&b1, &aabb1, &b2, &aabb2, -1.0).is_some(), false);
+      assert_eq!(aabb_aabb_sweep(&b1, &aabb1, &b2, &aabb2, 1.0).is_some(), true);
+      assert_eq!(aabb_aabb_sweep(&b1, &aabb1, &b2, &aabb2, 100.0).is_some(), true);
+      assert_eq!(aabb_aabb_sweep(&b1, &aabb1, &b2, &aabb2, -1.0).is_some(), false);
    }
 
    #[test]
    fn circle_circle_swept_test() {
       let c1 = Circle::new(0.5, 0.0, 0.0);
-      let b1 = Body { aabb: c1.get_aabb(), shapes: vec![Shape::Circle(c1)], pos: vec2(1.0, 1.0), vel: vec2(1.0, 1.0) };
+      let b1 = Body { aabb: c1.get_aabb(), shapes: vec![Shape::Circle(c1)], pos: vec2(1.0, 1.0), vel: vec2(1.0, 1.0), bullet: false };
       let c2 = Circle::new(0.1, 2.0, 4.0);
-      let b2 = Body { aabb: c2.get_aabb(), shapes: vec![Shape::Circle(c2)], pos: vec2(0.2, -0.5), vel: vec2(0.0, -2.0) };
+      let b2 = Body { aabb: c2.get_aabb(), shapes: vec![Shape::Circle(c2)], pos: vec2(0.2, -0.5), vel: vec2(0.0, -2.0), bullet: false };
 
-      println!("{:?}", circle_circle_swept(&b1, &c1, &b2, &c2, 1.0));
-      assert_eq!(circle_circle_swept(&b1, &c1, &b2, &c2, 1.0).is_some(), true);
-      assert_eq!(circle_circle_swept(&b1, &c1, &b2, &c2, 0.5).is_some(), false);
-      assert_eq!(circle_circle_swept(&b1, &c1, &b2, &c2, -1.0).is_some(), false);
+      println!("{:?}", circle_circle_sweep(&b1, &c1, &b2, &c2, 1.0));
+      assert_eq!(circle_circle_sweep(&b1, &c1, &b2, &c2, 1.0).is_some(), true);
+      assert_eq!(circle_circle_sweep(&b1, &c1, &b2, &c2, 0.5).is_some(), false);
+      assert_eq!(circle_circle_sweep(&b1, &c1, &b2, &c2, -1.0).is_some(), false);
 
       let c1 = Circle::new(0.5, 0.0, 0.0);
-      let b1 = Body { aabb: c1.get_aabb(), shapes: vec![Shape::Circle(c1)], pos: vec2(2.0, 1.0), vel: vec2(1.0, 1.0) };
+      let b1 = Body { aabb: c1.get_aabb(), shapes: vec![Shape::Circle(c1)], pos: vec2(2.0, 1.0), vel: vec2(1.0, 1.0), bullet: false };
       let c2 = Circle::new(0.1, 2.0, 4.0);
-      let b2 = Body { aabb: c2.get_aabb(), shapes: vec![Shape::Circle(c2)], pos: vec2(0.2, -0.5), vel: vec2(0.0, -2.0) };
+      let b2 = Body { aabb: c2.get_aabb(), shapes: vec![Shape::Circle(c2)], pos: vec2(0.2, -0.5), vel: vec2(0.0, -2.0), bullet: false };
 
-      assert_eq!(circle_circle_swept(&b1, &c1, &b2, &c2, 1.0).is_some(), false);
-      assert_eq!(circle_circle_swept(&b1, &c1, &b2, &c2, 0.5).is_some(), false);
-      assert_eq!(circle_circle_swept(&b1, &c1, &b2, &c2, -1.0).is_some(), false);
+      assert_eq!(circle_circle_sweep(&b1, &c1, &b2, &c2, 1.0).is_some(), false);
+      assert_eq!(circle_circle_sweep(&b1, &c1, &b2, &c2, 0.5).is_some(), false);
+      assert_eq!(circle_circle_sweep(&b1, &c1, &b2, &c2, -1.0).is_some(), false);
    }
 
    #[test]
    fn aabb_circle_swept() {
       let a1 = AABB::new(-0.5, -0.5, 0.5, 0.5);
-      let b1 = Body { aabb: a1, shapes: vec![Shape::Aabb(a1)], pos: vec2(1.0, 1.0), vel: vec2(2.0, 2.0) };
+      let b1 = Body { aabb: a1, shapes: vec![Shape::Aabb(a1)], pos: vec2(1.0, 1.0), vel: vec2(2.0, 2.0), bullet: false };
       let c2 = Circle::new(0.5, 2.0, 4.0);
-      let b2 = Body { aabb: c2.get_aabb(), shapes: vec![Shape::Circle(c2)], pos: vec2(0.2, -0.5), vel: vec2(0.0, -2.0) };
+      let b2 = Body { aabb: c2.get_aabb(), shapes: vec![Shape::Circle(c2)], pos: vec2(0.2, -0.5), vel: vec2(0.0, -2.0), bullet: false };
 
-      println!("{:?}", a1.circle_sweep(&b1, &c2, &b2, 1.0));
-      assert_eq!(a1.circle_sweep(&b1, &c2, &b2, 1.0).is_some(), true);
+      println!("{:?}", body_body_swept(&b1, &b2, 1.0));
+      assert_eq!(body_body_swept(&b1, &b2, 1.0).is_some(), true);
 
       let a1 = AABB::new(0.0, 0.0, 1.0, 1.0);
-      let b1 = Body { aabb: a1, shapes: vec![Shape::Aabb(a1)], pos: vec2(0.0, 0.0), vel: vec2(0.0, 0.0) };
+      let b1 = Body { aabb: a1, shapes: vec![Shape::Aabb(a1)], pos: vec2(0.0, 0.0), vel: vec2(0.0, 0.0), bullet: false };
       let c2 = Circle::new(0.5, 2.0, 2.0);
-      let b2 = Body { aabb: c2.get_aabb(), shapes: vec![Shape::Circle(c2)], pos: vec2(1.0, 1.4), vel: vec2(-2.0, -2.0) };
+      let b2 = Body { aabb: c2.get_aabb(), shapes: vec![Shape::Circle(c2)], pos: vec2(1.0, 1.4), vel: vec2(-2.0, -2.0), bullet: false };
 
-      println!("{:?}", a1.circle_sweep(&b1, &c2, &b2, 1.0));
-      assert_eq!(a1.circle_sweep(&b1, &c2, &b2, 1.0).is_some(), true);
+      println!("{:?}", body_body_swept(&b1, &b2, 1.0));
+      assert_eq!(body_body_swept(&b1, &b2, 1.0).is_some(), true);
+   }
+
+   #[test]
+   fn poly_circle_swept_test() { 
+      // copy of circle tests, both succeed
+      let p1 = Poly::new(&[vec2(0.0, 0.5), vec2(0.5, 0.2), vec2(0.5, -0.2), vec2(0.0, -0.5), vec2(-0.5, -0.2), vec2(-0.5, 0.2)]);
+      let b1 = Body { aabb: p1.aabb, shapes: vec![Shape::Poly(p1.clone())], pos: vec2(1.0, 1.0), vel: vec2(1.0, 1.0), bullet: false };
+      let c2 = Circle::new(0.1, 2.0, 4.0);
+      let b2 = Body { aabb: c2.get_aabb(), shapes: vec![Shape::Circle(c2)], pos: vec2(0.2, -0.5), vel: vec2(0.0, -2.0), bullet: false };
+
+      println!("{:?}", body_body_swept(&b1, &b2, 1.0));
+      assert_eq!(body_body_swept(&b1, &b2, 1.0).is_some(), true);
+
+      let p1 = Poly::new(&[vec2(0.0, 0.5), vec2(0.5, 0.2), vec2(0.5, -0.2), vec2(0.0, -0.5), vec2(-0.5, -0.2), vec2(-0.5, 0.2)]).translate(vec2(0.5, 0.5));
+      let b1 = Body { aabb: p1.aabb, shapes: vec![Shape::Poly(p1.clone())], pos: vec2(2.0, 1.0), vel: vec2(1.0, 1.0), bullet: false };
+      let c2 = Circle::new(0.1, 2.0, 4.0);
+      let b2 = Body { aabb: c2.get_aabb(), shapes: vec![Shape::Circle(c2)], pos: vec2(0.2, -0.5), vel: vec2(0.0, -2.0), bullet: false };
+
+      assert_eq!(body_body_swept(&b1, &b2, 1.0).is_some(), false);
+      assert_eq!(body_body_swept(&b1, &b2, 0.5).is_some(), false);
+      assert_eq!(body_body_swept(&b1, &b2, -1.0).is_some(), false);
+   }
+
+   #[test]
+   fn poly_aabb_swept_test() {
+      let a1 = AABB::new(0.0, 0.0, 1.0, 1.0);
+      let b1 = Body { aabb: a1, shapes: vec![Shape::Aabb(a1)], pos: vec2(0.0, 0.0), vel: vec2(1.0, 0.0), bullet: false };
+      let poly2 = Poly::new(&[vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 1.0)]).translate(vec2(2.0, 0.0));
+      let b2 = Body { aabb: poly2.aabb, shapes: vec![Shape::Poly(poly2)], pos: vec2(0.0, -0.0), vel: vec2(-1.0, 0.0), bullet: false };
+
+      println!("{:?}", body_body_swept(&b1, &b2, 1.0));
+      assert_eq!(body_body_swept(&b1, &b2, 1.0).is_some(), true);
+
+      let a1 = AABB::new(0.0, 0.0, 1.0, 1.0);
+      let b1 = Body { aabb: a1, shapes: vec![Shape::Aabb(a1)], pos: vec2(0.0, 0.0), vel: vec2(1.0, 1.0), bullet: false };
+      let poly2 = Poly::new(&[vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 1.0)]).translate(vec2(2.0, 1.0));
+      let b2 = Body { aabb: poly2.aabb, shapes: vec![Shape::Poly(poly2.clone())], pos: vec2(0.2, -0.5), vel: vec2(-1.0, 0.0), bullet: false };
+
+      println!("{:?}", body_body_swept(&b1, &b2, 1.0));
+      assert_eq!(body_body_swept(&b1, &b2, 1.0).is_some(), true);
+      assert_eq!(body_body_swept(&b1, &b2, 1.0).is_some(), false);
    }
 
    #[test]
    fn poly_body_swept_test() {
       let poly1 = Poly::new(&[vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 1.0)]);
-      let b1 = Body { aabb: poly1.aabb, shapes: vec![Shape::Poly(poly1.clone())], pos: vec2(0.0, 0.0), vel: vec2(1.0, 1.0) };
+      let b1 = Body { aabb: poly1.aabb, shapes: vec![Shape::Poly(poly1.clone())], pos: vec2(0.0, 0.0), vel: vec2(1.0, 1.0), bullet: false };
       let poly2 = Poly::new(&[vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 1.0)]).translate(vec2(2.0, 1.0));
-      let b2 = Body { aabb: poly2.aabb, shapes: vec![Shape::Poly(poly2.clone())], pos: vec2(0.2, -0.5), vel: vec2(-1.0, 0.0) };
+      let b2 = Body { aabb: poly2.aabb, shapes: vec![Shape::Poly(poly2.clone())], pos: vec2(0.2, -0.5), vel: vec2(-1.0, 0.0), bullet: false };
 
-      println!("{:?}", b1);
-      println!("{:?}", b2);
-      assert_eq!(poly_poly_swept(&b1, &poly1, &b2, &poly2, 1.0).is_some(), true);
+      println!("{:?}", poly_poly_sweep(&b1, &poly1, &b2, &poly2, 1.0));
+      assert_eq!(poly_poly_sweep(&b1, &poly1, &b2, &poly2, 1.0).is_some(), true);
       assert_eq!(body_body_swept(&b1, &b2, 1.0).is_some(), true);
    }
-
-   // todo: swept tests
 }

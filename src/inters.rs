@@ -82,7 +82,7 @@ impl Circle {
    }
 
    #[inline]
-   pub fn bounding_test(self, aabb: &AABB) -> bool {
+   pub fn bounding_test(self, aabb: &Aabb) -> bool {
       //! Performs an AABB test between `aabb` and the circle's bounding box.
       aabb.min.x <= self.rad + self.pos.x && aabb.max.x >= self.pos.x - self.rad 
       && aabb.min.y <= self.pos.y + self.rad && aabb.max.y >= self.pos.y - self.rad
@@ -90,34 +90,34 @@ impl Circle {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct AABB {
+pub struct Aabb {
    pub min: Vector2<f64>,
    pub max: Vector2<f64>,
 }
-impl AABB {
+impl Aabb {
    #[inline]
-   pub fn new(minx: f64, miny: f64, maxx: f64, maxy: f64) -> AABB {
+   pub fn new(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Aabb {
       assert_eq!(minx < maxx, true); // todo: remove
       assert_eq!(miny < maxy, true);
 
-      AABB { 
+      Aabb { 
          min: cgmath::vec2(minx, miny), 
          max: cgmath::vec2(maxx, maxy) 
       }
    }
-   pub fn new_safe(ax: f64, by: f64, cx: f64, dy: f64) -> AABB {
+   pub fn new_safe(ax: f64, by: f64, cx: f64, dy: f64) -> Aabb {
       //! Orders minimum and maximum values.
       if ax < cx {
          if by < dy {
-            AABB::new(ax, by, cx, dy)
+            Aabb::new(ax, by, cx, dy)
          } else {
-            AABB::new(ax, dy, cx, by)
+            Aabb::new(ax, dy, cx, by)
          }
       } else {
          if by < dy {
-            AABB::new(cx, by, ax, dy)
+            Aabb::new(cx, by, ax, dy)
          } else {
-            AABB::new(cx, dy, ax, by)
+            Aabb::new(cx, dy, ax, by)
          }
       }
    }
@@ -131,32 +131,21 @@ impl AABB {
       cgmath::vec2(self.max.x, self.min.y)
    }
    #[inline]
-   pub fn translate(self, offset: Vector2<f64>) -> AABB {
-      AABB { min: self.min + offset, max: self.max + offset }
+   pub fn translate(self, offset: Vector2<f64>) -> Aabb {
+      Aabb { min: self.min + offset, max: self.max + offset }
    }
    
    #[inline]
-   pub fn broaden(self, dir: Vector2<f64>) -> AABB {
-      if dir.x >= 0.0 {
-         if dir.y >= 0.0 {
-            AABB { min: self.min, max: self.max + dir }
-         } else {
-            AABB { min: cgmath::vec2(self.min.x, self.min.y + dir.y), max: cgmath::vec2(self.max.x + dir.x, self.max.y) }
-         }
-      } else {
-         if dir.y >= 0.0 {
-            AABB { min: cgmath::vec2(self.min.x + dir.x, self.min.y), max: cgmath::vec2(self.max.x, self.max.y + dir.y) }
-         } else {
-            AABB { min: self.min + dir, max: self.max }
-         }
-      }
+   pub fn broaden(&self, dir: Vector2<f64>) -> Aabb {
+      Aabb { min: cgmath::vec2(f64::min(self.min.x, self.min.x + dir.x), f64::min(self.min.y, self.min.y + dir.y)),
+         max: cgmath::vec2(f64::max(self.max.x, self.max.x + dir.x), f64::max(self.max.y, self.max.y + dir.y)) }
    }
 }
 
 /// A 2D convex polygon, vertices arranged clockwise - tailed with a duplicate of the first, with unit-length normals - without duplication. 
 #[derive(Debug, Clone)]
 pub struct Poly {
-   pub aabb: AABB,
+   pub aabb: Aabb,
    /// First vertex's duplicate tails. `verts.len() - 1 == norms.len()`
    pub verts: Vec<Vector2<f64>>,
    /// Length equals actual vertex count. `verts.len() - 1 == norms.len()`
@@ -176,8 +165,8 @@ impl Poly {
          }
       }
 
-      let mut order = <Vec<usize>>::with_capacity(len);
-      for i in 0..len { order.push(i); }
+      let mut order = vec![];
+      order.extend(0..len);
       order[0] = index;
       order[index] = 0;
 
@@ -193,7 +182,7 @@ impl Poly {
                best = dot;
             }
          }
-         a = verts[order[index]] - a;
+         a = verts[order[index]] - vert;
          let t = order[v + 1];
          order[v + 1] = order[index];
          order[index] = t;
@@ -218,7 +207,7 @@ impl Poly {
          if verts[i].y > ay { ay = verts[i].y; }
       }
 
-      Poly { aabb: AABB::new(ix, iy, ax, ay), verts, norms }
+      Poly { aabb: Aabb::new(ix, iy, ax, ay), verts, norms }
    }
 
    #[inline]
@@ -234,7 +223,7 @@ impl Poly {
 
 // ---------- Shape-Shape intersection tests ---------- //
 
-fn aabb_circle_test(&AABB { min, max }: &AABB, &Circle { rad, pos }: &Circle) -> bool {
+fn aabb_circle_test(&Aabb { min, max }: &Aabb, &Circle { rad, pos }: &Circle) -> bool {
    let rad2 = rad + rad;
    if min.x <= rad2 + pos.x && max.x >= pos.x - rad2 && min.y <= pos.y + rad2 && max.y >= pos.y - rad2 {
       if pos.x < min.x {
@@ -259,7 +248,7 @@ fn aabb_circle_test(&AABB { min, max }: &AABB, &Circle { rad, pos }: &Circle) ->
       false
    }
 }
-fn poly_aabb_test(poly: &Poly, aabb: &AABB) -> bool {
+fn poly_aabb_test(poly: &Poly, aabb: &Aabb) -> bool {
    if poly.aabb.aabb_test(aabb) {
       // given the aabbs intersect, the polygon must have the seperating axis
       for i in 0..poly.norms.len() {
@@ -291,17 +280,18 @@ fn poly_circle_test(poly: &Poly, circle: &Circle) -> bool {
    if !circle.bounding_test(&poly.aabb) { return false }
 
    let len = poly.norms.len();
-   let mut found_sa = false;
+   let mut found_separating_axis = false;
    if (0..len).any(|i| circle.point_test(poly.verts[i])) { return true } // vert tests
    for i in 0..len { // pseudo SAT tests
-      let n = poly.norms[i];
-      let dot = n.dot(circle.pos - poly.verts[i]) as f64; // >0: SAT, <=0: NOSAT
+      let v = poly.verts[i];
+      let vc = circle.pos - v;
+      let dot = poly.norms[i].dot(vc) as f64; // >0: SA, <=0: no SA
       if dot <= 0.0 {
          continue; // axis does not seperate center
       } else {
-         found_sa = true;
+         found_separating_axis = true;
          if dot <= circle.rad { // if extended axis encompases center
-            let x = (poly.verts[i+1] - poly.verts[i]).dot(circle.pos) as f64;
+            let x = (poly.verts[i+1] - v).dot(vc) as f64;
             if 0.0 <= x && x <= 1.0 {
                return true // circle definitely touches line
             } else {
@@ -312,28 +302,28 @@ fn poly_circle_test(poly: &Poly, circle: &Circle) -> bool {
          }
       }
    }
-   !found_sa
+   !found_separating_axis
 }
 
 
 // ---------- Intersect ---------- //
 
 pub trait Intersect {
-   fn get_aabb(&self) -> AABB;
+   fn get_aabb(&self) -> Aabb;
 
    fn point_test(&self, point: Vector2<f64>) -> bool; // point test
    fn line_test(&self, a: Vector2<f64>, b: Vector2<f64>) -> bool; // line intersection
    fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<Vector2<f64>>; // line entrypoint
 
    fn circle_test(&self, circle: &Circle) -> bool; // circle intersection
-   fn aabb_test(&self, aabb: &AABB) -> bool; // aabb intersection
+   fn aabb_test(&self, aabb: &Aabb) -> bool; // aabb intersection
    fn poly_test(&self, poly: &Poly) -> bool; // poly intersection
 }
 
 impl Intersect for Circle {
    #[inline]
-   fn get_aabb(&self) -> AABB {
-      AABB { min: self.pos.sub_element_wise(self.rad), max: self.pos.add_element_wise(self.rad) }
+   fn get_aabb(&self) -> Aabb {
+      Aabb { min: self.pos.sub_element_wise(self.rad), max: self.pos.add_element_wise(self.rad) }
    }
 
    #[inline]
@@ -378,7 +368,7 @@ impl Intersect for Circle {
       (self.rad - c.rad) * (self.rad - c.rad) <= (self.pos - c.pos).magnitude2()
    }
    #[inline]
-   fn aabb_test(&self, aabb: &AABB) -> bool {
+   fn aabb_test(&self, aabb: &Aabb) -> bool {
        aabb_circle_test(aabb, self)
    }
    #[inline]
@@ -386,9 +376,9 @@ impl Intersect for Circle {
       poly_circle_test(poly, self)
    }
 }
-impl Intersect for AABB {
+impl Intersect for Aabb {
    #[inline]
-   fn get_aabb(&self) -> AABB {
+   fn get_aabb(&self) -> Aabb {
       *self
    }
 
@@ -429,7 +419,7 @@ impl Intersect for AABB {
        aabb_circle_test(self, circle)
    }
    #[inline]
-   fn aabb_test(&self, other: &AABB) -> bool {
+   fn aabb_test(&self, other: &Aabb) -> bool {
       self.min.x <= other.max.x && self.max.x >= other.min.x && self.min.y <= other.max.y && self.max.y >= other.min.y
    }
    #[inline]
@@ -439,7 +429,7 @@ impl Intersect for AABB {
 }
 impl Intersect for Poly {
    #[inline]
-   fn get_aabb(&self) -> AABB {
+   fn get_aabb(&self) -> Aabb {
       self.aabb
    }
 
@@ -468,35 +458,35 @@ impl Intersect for Poly {
       poly_circle_test(self, circle)
    }
    #[inline]
-   fn aabb_test(&self, aabb: &AABB) -> bool {
+   fn aabb_test(&self, aabb: &Aabb) -> bool {
       poly_aabb_test(self, aabb)
    }
    fn poly_test(&self, other: &Poly) -> bool {
       //! Returns whether an intersection occurs between the two polygons.
-         let len1 = self.norms.len();
-         let len2 = other.norms.len();
-         'axes1: for i in 0..len1 { // seperating axis algorithm
-            let n = self.norms[i];
-            let max = n.dot(self.verts[i]) as f64;
-            for v in 0..len2 {
-               if max >= n.dot(other.verts[v]) {
-                  continue 'axes1; // invalid axis if it does not seperate
-               }
+      let len1 = self.norms.len();
+      let len2 = other.norms.len();
+      'axes1: for i in 0..len1 { // seperating axis algorithm
+         let n = self.norms[i];
+         let max = n.dot(self.verts[i]) as f64;
+         for v in 0..len2 {
+            if max >= n.dot(other.verts[v]) {
+               continue 'axes1; // invalid axis if it does not seperate
             }
-            return false // valid axis found
          }
-         'axes2: for i in 0..len2 { // rewind logo problem necessitates both polys be verified
-            let n = other.norms[i];
-            let max = n.dot(other.verts[i]) as f64;
-            for v in 0..len1 {
-               if max >= n.dot(self.verts[v]) {
-                  continue 'axes2; // invalid axis if it does not seperate
-               }
-            }
-            return false // valid axis found
-         }
-         true
+         return false // valid axis found
       }
+      'axes2: for i in 0..len2 { // rewind logo problem necessitates both polys be verified
+         let n = other.norms[i];
+         let max = n.dot(other.verts[i]) as f64;
+         for v in 0..len1 {
+            if max >= n.dot(self.verts[v]) {
+               continue 'axes2; // invalid axis if it does not seperate
+            }
+         }
+         return false // valid axis found
+      }
+      true
+   }
 }
 
 // ---------- Shape ---------- //
@@ -504,7 +494,7 @@ impl Intersect for Poly {
 #[derive(Debug, Clone)]
 pub enum Shape {
    Circle(Circle), // 24 bytes
-   Aabb(AABB), // 32 bytes
+   Aabb(Aabb), // 32 bytes
    Poly(Poly), // 80 bytes
 }
 impl Shape {
@@ -535,7 +525,7 @@ impl Shape {
    }
 }
 impl Intersect for Shape {
-   fn get_aabb(&self) -> AABB {
+   fn get_aabb(&self) -> Aabb {
       match self {
          Shape::Aabb(aabb) => aabb.get_aabb(),
          Shape::Circle(c) => c.get_aabb(),
@@ -574,7 +564,7 @@ impl Intersect for Shape {
          Shape::Poly(poly) => poly.circle_test(circle),
       }
    }
-   fn aabb_test(&self, aabb: &AABB) -> bool {
+   fn aabb_test(&self, aabb: &Aabb) -> bool {
       match self {
          Shape::Aabb(aabb2) => aabb2.aabb_test(aabb),
          Shape::Circle(c)  => c.aabb_test(aabb),
@@ -614,5 +604,26 @@ mod tests {
       assert_eq!(c.line_query(vec2(0.0, 0.0), vec2(3.0, 1.0)).is_some(), true);
       assert_eq!(c.line_query(vec2(3.0, 1.0), vec2(0.0, 0.0)).is_some(), true);
       assert_eq!(c.line_query(vec2(0.0, 0.9), vec2(3.0, 1.0)).is_some(), true);
+   }
+
+   #[test]
+   fn test_poly_poly() {
+      let p1 = Poly::new(&[vec2(0.0, 0.5), vec2(0.5, 0.2), vec2(0.5, -0.2), vec2(0.0, -0.5), vec2(-0.5, -0.2), vec2(-0.5, 0.2)]).translate(vec2(0.5, 0.5));
+      let p2 = Poly::new(&[vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 1.0)]).translate(vec2(0.8, 0.8));
+
+      assert_eq!(p1.poly_test(&p2), true);
+
+      let p1 = p1.translate(vec2(0.5, 0.5));
+      let p2 = p2.translate(vec2(0.8, 0.8));
+
+      assert_eq!(p1.poly_test(&p2), false);
+
+      // poly swept sat confirmation
+      let p1 = Poly::new(&[vec2(0.0, 0.5), vec2(0.5, 0.2), vec2(0.5, -0.2), vec2(0.0, -0.5), vec2(-0.5, -0.2), vec2(-0.5, 0.2)])
+      .translate(vec2(0.5, 0.5)).translate(vec2(1.0, 1.0));
+      let p2 = Poly::new(&[vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 1.0)])
+      .translate(vec2(2.0, 1.0)).translate(vec2(0.1, -0.2));
+
+      assert_eq!(p1.poly_test(&p2), false);
    }
 }

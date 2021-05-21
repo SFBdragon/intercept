@@ -1,13 +1,7 @@
+use std::mem::ManuallyDrop;
 use cgmath::{ElementWise, InnerSpace, Vector2};
 
-macro_rules! retifsome {
-   ($e:expr) => {
-      if let Some(r) = $e {
-         return Some(r);
-      }
-   };
-}
-
+pub mod swept;
 
 // ---------- Point & Line ---------- //
 
@@ -320,6 +314,14 @@ pub trait Intersect {
    fn poly_test(&self, poly: &Poly) -> bool; // poly intersection
 }
 
+macro_rules! retifsome {
+   ($e:expr) => {
+      if let Some(r) = $e {
+         return Some(r);
+      }
+   };
+}
+
 impl Intersect for Circle {
    #[inline]
    fn get_aabb(&self) -> Aabb {
@@ -491,15 +493,51 @@ impl Intersect for Poly {
 
 // ---------- Shape ---------- //
 
-#[derive(Debug, Clone)]
-pub enum Shape {
-   Circle(Circle), // 24 bytes
-   Aabb(Aabb), // 32 bytes
-   Poly(Poly), // 80 bytes
+union ShapeUnion {
+   circle: Circle, // 24 bytes
+   aabb: Aabb, // 32 bytes
+   poly: ManuallyDrop<Poly>, // 80 bytes
+}
+pub struct Shape {
+   id: u8,
+   shape: ShapeUnion,
 }
 impl Shape {
+   const CIRCLE_ID: u8 = 0u8;
+   const AABB_ID: u8 = 1u8;
+   const POLY_ID: u8 = 2u8;
+   
+   pub fn new_circle(circle: Circle) -> Shape {
+      Shape { id: Shape::CIRCLE_ID, shape: ShapeUnion { circle } }
+   }
+   pub fn new_aabb(aabb: Aabb) -> Shape {
+      Shape { id: Shape::AABB_ID, shape: ShapeUnion { aabb } }
+   }
+   pub fn new_poly(poly: Poly) -> Shape {
+      Shape { id: Shape::POLY_ID, shape: ShapeUnion { poly: ManuallyDrop::new(poly) } }
+   }
+
    pub fn shape_test(&self, other: &Shape) -> bool {
-      match self {
+      // manually implemented jump table optimization
+      // Safety: Shape id verified in jump table
+      fn circle_circle_inter(su1: &ShapeUnion, su2: &ShapeUnion) -> bool { unsafe { su1.circle.circle_test(&su2.circle) } }
+      fn circle_aabb_inter(su1: &ShapeUnion, su2: &ShapeUnion) -> bool { unsafe { su1.circle.aabb_test(&su2.aabb) } }
+      fn circle_poly_inter(su1: &ShapeUnion, su2: &ShapeUnion) -> bool { unsafe { su1.circle.poly_test(&su2.poly) } }
+      fn aabb_circle_inter(su1: &ShapeUnion, su2: &ShapeUnion) -> bool { unsafe { su1.aabb.circle_test(&su2.circle) } }
+      fn aabb_aabb_inter(su1: &ShapeUnion, su2: &ShapeUnion) -> bool { unsafe { su1.aabb.aabb_test(&su2.aabb) } }
+      fn aabb_poly_inter(su1: &ShapeUnion, su2: &ShapeUnion) -> bool { unsafe { su1.aabb.poly_test(&su2.poly) } }
+      fn poly_circle_inter(su1: &ShapeUnion, su2: &ShapeUnion) -> bool { unsafe { su1.poly.circle_test(&su2.circle) } }
+      fn poly_aabb_inter(su1: &ShapeUnion, su2: &ShapeUnion) -> bool { unsafe { su1.poly.aabb_test(&su2.aabb) } }
+      fn poly_poly_inter(su1: &ShapeUnion, su2: &ShapeUnion) -> bool { unsafe { su1.poly.poly_test(&su2.poly) } }
+
+      type ShapeTestHeader = fn(&ShapeUnion, &ShapeUnion) -> bool;
+      const SHAPE_JUMP_TABLE: [[ShapeTestHeader; 3]; 3] = [
+         [circle_circle_inter, circle_aabb_inter, circle_poly_inter],
+         [aabb_circle_inter, aabb_aabb_inter, aabb_poly_inter],
+         [poly_circle_inter, poly_aabb_inter, poly_poly_inter]];
+      SHAPE_JUMP_TABLE[self.id as usize][other.id as usize](&self.shape, &other.shape)
+
+      /*match self {
          Shape::Aabb(aabb) => {
             match other {
                Shape::Aabb(aabb2) => aabb.aabb_test(aabb2),
@@ -521,64 +559,114 @@ impl Shape {
                Shape::Poly(poly2) => poly.poly_test(poly2),
             }
          },
+      }*/
+   }
+}
+impl Drop for Shape {
+   fn drop(&mut self) {
+      if self.id == 2u8 {
+         // Safety: Just confirmed that ShapeUnion is poly by associated id
+         unsafe {
+            ManuallyDrop::drop(&mut self.shape.poly);
+         }
+      }
+   }
+}
+impl Clone for Shape {
+   fn clone(&self) -> Shape {
+      // Safety: Shape.id check
+      unsafe {
+         match self.id {
+            Shape::CIRCLE_ID => Shape { id: Shape::CIRCLE_ID, shape: ShapeUnion { circle: self.shape.circle } },
+            Shape::AABB_ID => Shape { id: Shape::AABB_ID, shape: ShapeUnion { aabb: self.shape.aabb } },
+            _ => Shape { id: Shape::POLY_ID, shape: ShapeUnion { poly: self.shape.poly.clone() } }
+         }
       }
    }
 }
 impl Intersect for Shape {
+
    fn get_aabb(&self) -> Aabb {
-      match self {
-         Shape::Aabb(aabb) => aabb.get_aabb(),
-         Shape::Circle(c) => c.get_aabb(),
-         Shape::Poly(poly) => poly.get_aabb(),
+      unsafe { // Safety: Shape id verifies union's identity
+         match self.id {
+            Shape::CIRCLE_ID => self.shape.circle.get_aabb(),
+            Shape::AABB_ID => self.shape.aabb.get_aabb(),
+            _ => self.shape.poly.get_aabb(),
+         }
       }
    }
 
    fn point_test(&self, loc: Vector2<f64>) -> bool {
-      match self {
-         Shape::Aabb(aabb) => aabb.point_test(loc),
-         Shape::Circle(c) => c.rad * c.rad >= (loc - c.pos).magnitude2(),
-         Shape::Poly(poly) => poly.point_test(loc),
+      unsafe { // Safety: Shape id verifies union's identity
+         match self.id {
+            Shape::CIRCLE_ID => self.shape.circle.point_test(loc),
+            Shape::AABB_ID => self.shape.aabb.point_test(loc),
+            _ => self.shape.poly.point_test(loc),
+         }
       }
    }
    /// Returns whether a line-shape intersection occurs.
    fn line_test(&self, a: Vector2<f64>, b: Vector2<f64>) -> bool {
-      match self {
-         Shape::Aabb(aabb) => aabb.line_test(a, b),
-         Shape::Circle(c) => c.line_test(a, b),
-         Shape::Poly(poly) => poly.line_test(a, b),
+      unsafe { // Safety: Shape id verifies union's identity
+         match self.id {
+            Shape::CIRCLE_ID => self.shape.circle.line_test(a, b),
+            Shape::AABB_ID => self.shape.aabb.line_test(a, b),
+            _ => self.shape.poly.line_test(a, b),
+         }
       }
    }
    /// Optionally returns entrypoint of `a`->`b` through `self`.
    fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<Vector2<f64>> {
-      match self {
-         Shape::Aabb (aabb) => aabb.line_query(a, b),
-         Shape::Circle(c) => c.line_query(a, b),
-         Shape::Poly(poly) => poly.line_query(a, b),
+      unsafe { // Safety: Shape id verifies union's identity
+         match self.id {
+            Shape::CIRCLE_ID => self.shape.circle.line_query(a, b),
+            Shape::AABB_ID => self.shape.aabb.line_query(a, b),
+            _ => self.shape.poly.line_query(a, b),
+         }
       }
    }
    
    fn circle_test(&self, circle: &Circle) -> bool {
-      match self {
-         Shape::Aabb(aabb) => aabb.circle_test(circle),
-         Shape::Circle(c) => c.circle_test(circle),
-         Shape::Poly(poly) => poly.circle_test(circle),
+      unsafe { // Safety: Shape id verifies union's identity
+         match self.id {
+            Shape::CIRCLE_ID => self.shape.circle.circle_test(circle),
+            Shape::AABB_ID => self.shape.aabb.circle_test(circle),
+            _ => self.shape.poly.circle_test(circle),
+         }
       }
    }
    fn aabb_test(&self, aabb: &Aabb) -> bool {
-      match self {
-         Shape::Aabb(aabb2) => aabb2.aabb_test(aabb),
-         Shape::Circle(c)  => c.aabb_test(aabb),
-         Shape::Poly(poly) => poly.aabb_test(aabb),
+      unsafe { // Safety: Shape id verifies union's identity
+         match self.id {
+            Shape::CIRCLE_ID => self.shape.circle.aabb_test(aabb),
+            Shape::AABB_ID => self.shape.aabb.aabb_test(aabb),
+            _ => self.shape.poly.aabb_test(aabb),
+         }
       }
    }
    fn poly_test(&self, poly: &Poly) -> bool {
-      match self {
-         Shape::Aabb(aabb) => aabb.poly_test(poly),
-         Shape::Circle(c)  => c.poly_test(poly),
-         Shape::Poly(poly2) => poly2.poly_test(poly),
+      unsafe { // Safety: Shape id verifies union's identity
+         match self.id {
+            Shape::CIRCLE_ID => self.shape.circle.poly_test(poly),
+            Shape::AABB_ID => self.shape.aabb.poly_test(poly),
+            _ => self.shape.poly.poly_test(poly),
+         }
       }
    }
 }
+
+
+/*macro_rules! shape_jump_table {
+   ($shape:ident, $result:ident ; ($($i:ident : $t:ty),*) -> $r:ty ; $ce:expr, $ae:expr, $pe:expr ) => {
+      fn circle($($i : $t,)*) -> $r { unsafe { $ce } }
+      fn aabb($($i : $t,)*) -> $r { unsafe { $ae } }
+      fn poly($($i : $t,)*) -> $r { unsafe { $pe } }
+
+      type FnHeader = fn($($t,)*) -> $r;
+      const SHAPE_JUMP_TABLE: [FnHeader; 3] = [circle, aabb, poly];
+      let $result = SHAPE_JUMP_TABLE[$shape.id as usize]($($i,)*);
+   }
+}*/
 
 
 #[cfg(test)]

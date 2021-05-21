@@ -1,10 +1,10 @@
 //! Presolve convex 2D shape collision library.
 
 pub mod inters;
-pub mod swept;
+pub mod broadphase;
 
 pub use inters::{Circle, Aabb, Poly, Shape, Intersect};
-pub use swept::{Body, BodySweptData, body_sweep, shape_sweep};
+pub use inters::swept::{Body, BodySweptData, body_sweep};
 
 #[cfg(test)]
 mod tests {

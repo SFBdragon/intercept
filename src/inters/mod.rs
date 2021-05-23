@@ -1,4 +1,4 @@
-use std::mem::ManuallyDrop;
+use std::{fmt::{Debug, Formatter}, mem::ManuallyDrop};
 use cgmath::{ElementWise, InnerSpace, Vector2};
 
 pub mod swept;
@@ -17,9 +17,10 @@ pub fn point_normal_test(loc: Vector2<f64>, a: Vector2<f64>, normal: Vector2<f64
    //! Returns whether the point is toward the opposite direction of the normal from the vertex `a`.
    normal.dot(loc - a) <= 0.0
 }
+
 #[inline]
-pub fn line_line_test(a1: Vector2<f64>, a2: Vector2<f64>, b1: Vector2<f64>, b2: Vector2<f64>) -> bool {
-   //! Returns whether a line-line intersection occurs.
+pub fn seg_seg_test(a1: Vector2<f64>, a2: Vector2<f64>, b1: Vector2<f64>, b2: Vector2<f64>) -> bool {
+   //! Returns whether a line segment-line segment intersection occurs.
    let da = a2 - a1;
    let db = b2 - b1;
 
@@ -36,8 +37,8 @@ pub fn line_line_test(a1: Vector2<f64>, a2: Vector2<f64>, b1: Vector2<f64>, b2: 
    udd >= 0.0 && udd <= dd && tdd >= 0.0 && tdd <= dd
 }
 #[inline]
-pub fn line_line_query(a1: Vector2<f64>, a2: Vector2<f64>, b1: Vector2<f64>, b2: Vector2<f64>) -> Option<Vector2<f64>> { 
-   //! Optionally returns the line-line intersection point.
+pub fn seg_seg_query(a1: Vector2<f64>, a2: Vector2<f64>, b1: Vector2<f64>, b2: Vector2<f64>) -> Option<f64> {
+   //! Returns the coefficient distance along line segment `a` an intersection occurs.
    let da = a2 - a1;
    let db = b2 - b1;
 
@@ -47,15 +48,45 @@ pub fn line_line_query(a1: Vector2<f64>, a2: Vector2<f64>, b1: Vector2<f64>, b2:
 
    let nd1 = a1 - b1;
    let tdd = (db.x * nd1.y - db.y * nd1.x) * dot;
-   if tdd < 0.0 || tdd > dd { return None }
+   if tdd < 0.0 || tdd > dd { return None } // seg a guard
 
    let udd = (da.x * nd1.y - da.y * nd1.x) * dot;
-   if udd < 0.0 || udd > dd { return None }
+   if udd < 0.0 || udd > dd { return None } // seg b guard
 
-   let t = tdd / dd;
-   Some(cgmath::vec2(a1.x + t * da.x, a1.y + t * da.y))
+   Some(tdd / dd)
 }
+#[inline]
+pub fn line_seg_query(o: Vector2<f64>, n: Vector2<f64>, b1: Vector2<f64>, b2: Vector2<f64>) -> Option<f64> { 
+   //! Returns the distance along line from `o` an intersection occurs.
+   let db = b2 - b1;
 
+   let dot = n.x * db.y - db.x * n.y;
+   if dot == 0.0 { return None } // guard against colinearity
+
+   let nd1 = o - b1;
+   let udd = (o.x * nd1.y - o.y * nd1.x) * dot;
+   if udd < 0.0 || udd > dot * dot { return None } // seg b guard
+   
+   Some((db.x * nd1.y - db.y * nd1.x) / dot)
+}
+#[inline]
+pub fn seg_line_query(a1: Vector2<f64>, a2: Vector2<f64>, o: Vector2<f64>, n: Vector2<f64>) -> Option<f64> { 
+   //! Returns the coefficient distance along line segment `a` an intersection occurs.
+   let da = a2 - a1;
+   let dot = da.x * n.y - n.x * da.y;
+   if dot == 0.0 { return None } // guard against colinearity
+
+   let nd1 = a1 - o;
+   let t = (n.x * nd1.y - n.y * nd1.x) / dot;
+   if t < 0.0 || t > 1.0 { None } else { Some(t) }
+}
+#[inline]
+pub fn line_line_query(o1: Vector2<f64>, n1: Vector2<f64>, o2: Vector2<f64>, n2: Vector2<f64>) -> Option<f64> { 
+   //! Returns the distance along line `1` from `o1` an intersection occurs.
+   let dot = n1.x * n2.y - n2.x * n1.y;
+   if dot == 0.0 { return None } // guard against colinearity
+   Some((n2.x * (o1.y - o2.y) - n2.y * (o1.x - o2.x)) / dot)
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Circle {
@@ -91,7 +122,7 @@ pub struct Aabb {
 impl Aabb {
    #[inline]
    pub fn new(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Aabb {
-      assert_eq!(minx < maxx, true); // todo: remove
+      assert_eq!(minx < maxx, true);
       assert_eq!(miny < maxy, true);
 
       Aabb { 
@@ -307,19 +338,11 @@ pub trait Intersect {
 
    fn point_test(&self, point: Vector2<f64>) -> bool; // point test
    fn line_test(&self, a: Vector2<f64>, b: Vector2<f64>) -> bool; // line intersection
-   fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<Vector2<f64>>; // line entrypoint
+   fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<f64>; // line entrypoint distance coeff
 
    fn circle_test(&self, circle: &Circle) -> bool; // circle intersection
    fn aabb_test(&self, aabb: &Aabb) -> bool; // aabb intersection
    fn poly_test(&self, poly: &Poly) -> bool; // poly intersection
-}
-
-macro_rules! retifsome {
-   ($e:expr) => {
-      if let Some(r) = $e {
-         return Some(r);
-      }
-   };
 }
 
 impl Intersect for Circle {
@@ -347,19 +370,19 @@ impl Intersect for Circle {
       self.rad * self.rad >= distx * distx + disty * disty
    }
    #[inline]
-   fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<Vector2<f64>> {
-      //! Optionally returns entrypoint of `a`->`b` through `self`. Does not return tangential intersections.
+   fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<f64> {
+      //! Returns the coefficient distance along line segment `a->b` an intersection occurs. Does not return tangents.
       let diff = a - self.pos;
       let ab = b - a;
-      let magnitude = ab.magnitude() as f64;
-      let unit = ab.div_element_wise(magnitude); // normalization
+      let inv_size = 1.0 / (ab.magnitude2() as f64).sqrt();
+      let unit = ab.mul_element_wise(inv_size); // normalization
       
       let dot = unit.dot(diff) as f64;
       let x = self.rad * self.rad + dot * dot - diff.magnitude2() as f64;
       if x > 0.0 {
-         let d = -(dot + x.sqrt());
-         if d >= 0.0 && d <= magnitude {
-            return Some(a + unit.mul_element_wise(d))
+         let d = -(dot + x.sqrt()) * inv_size;
+         if d >= 0.0 && d <= 1.0 {
+            return Some(d)
          }
       }
       None
@@ -401,17 +424,38 @@ impl Intersect for Aabb {
       || f64::abs(halfdiff.y) > halfaabb.y + abs_hd_y
       || f64::abs(halfab.x * halfdiff.y - halfab.y * halfdiff.x) > halfaabb.x * abs_hd_y + halfaabb.y * abs_hd_x + 0.00001 )
    }
-   fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<Vector2<f64>> {
-      //! Optionally returns entrypoint of `a`->`b` through `self`.
+   fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<f64> {
+      //! Returns the coefficient distance along line segment `a->b` an intersection occurs.
+      let ab = b - a;
       if a.x < self.min.x { // l/r tests
-         retifsome!(line_line_query(a, b, self.min, self.minx_maxy()));
+         if b.x > self.min.x {
+            let t = (self.min.x - a.x) / ab.x;
+            if t >= 0.0 || t <= 1.0 {
+               return Some(t)
+            }
+         }
       } else if a.x > self.max.x {
-         retifsome!(line_line_query(a, b, self.min, self.minx_maxy()));
+         if b.x < self.max.x {
+            let t = (self.max.x - a.x) /  ab.x;
+            if t >= 0.0 || t <= 1.0 {
+               return Some(t)
+            }
+         }
       }
       if a.y < self.min.y { // t/d tests
-         retifsome!(line_line_query(a, b, self.min, self.minx_maxy()));
+         if b.y > self.min.y {
+            let t = (self.min.y - a.y) / ab.y;
+            if t >= 0.0 || t <= 1.0 {
+               return Some(t)
+            }
+         }
       } else if a.y > self.max.y {
-         retifsome!(line_line_query(a, b, self.min, self.minx_maxy()));
+         if b.y < self.max.y {
+            let t = (self.max.y - a.y) / ab.y;
+            if t >= 0.0 || t <= 1.0 {
+               return Some(t)
+            }
+         }
       }
       None
    }
@@ -441,15 +485,17 @@ impl Intersect for Poly {
    fn line_test(&self, a: Vector2<f64>, b: Vector2<f64>) -> bool {
       //! Returns whether a line-polygon intersection occurs.
       let len = self.norms.len();
-      (0..len).any(|i| line_line_test(self.verts[i], self.verts[i+1], a, b))
+      (0..len).any(|i| seg_seg_test(self.verts[i], self.verts[i+1], a, b))
    }
-   fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<Vector2<f64>> {
-      //! Optionally returns entrypoint of `a`->`b` through `self`.
+   fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<f64> {
+      //! Returns the coefficient distance along line segment `a->b` an intersection occurs.
       let len = self.norms.len();
       let line = b - a;
       for i in 0..len {
          if point_normal_test(a, self.verts[i], self.norms[i]) && self.norms[i].dot(line) < 0.0 {
-            retifsome!(line_line_query(a, b, self.verts[i], self.verts[i+1]));
+            if let Some(t) = seg_seg_query(a, b, self.verts[i], self.verts[i+1]) {
+               return Some(t)
+            }
          }
       }
       None
@@ -498,23 +544,78 @@ union ShapeUnion {
    aabb: Aabb, // 32 bytes
    poly: ManuallyDrop<Poly>, // 80 bytes
 }
+
 pub struct Shape {
    id: u8,
    shape: ShapeUnion,
 }
 impl Shape {
-   const CIRCLE_ID: u8 = 0u8;
-   const AABB_ID: u8 = 1u8;
-   const POLY_ID: u8 = 2u8;
+   pub const CIRCLE_ID: u8 = 0u8;
+   pub const AABB_ID: u8 = 1u8;
+   pub const POLY_ID: u8 = 2u8;
    
-   pub fn new_circle(circle: Circle) -> Shape {
+   pub fn circle(circle: Circle) -> Shape {
       Shape { id: Shape::CIRCLE_ID, shape: ShapeUnion { circle } }
    }
-   pub fn new_aabb(aabb: Aabb) -> Shape {
+   pub fn aabb(aabb: Aabb) -> Shape {
       Shape { id: Shape::AABB_ID, shape: ShapeUnion { aabb } }
    }
-   pub fn new_poly(poly: Poly) -> Shape {
+   pub fn poly(poly: Poly) -> Shape {
       Shape { id: Shape::POLY_ID, shape: ShapeUnion { poly: ManuallyDrop::new(poly) } }
+   }
+
+   pub fn access_circle(&self) -> Option<&Circle> {
+      //! Safe alternative to `expect_circle`.
+      if self.id == Shape::CIRCLE_ID { unsafe { Some(&self.shape.circle) } } else { None }
+   }
+   pub fn access_aabb(&self) -> Option<&Aabb> {
+      //! Safe alternative to `expect_aabb`.
+      if self.id == Shape::AABB_ID { unsafe { Some(&self.shape.aabb) } } else { None }
+   }
+   pub fn access_poly(&self) -> Option<&Poly> {
+      //! Safe alternative to `expect_aabb`.
+      if self.id == Shape::POLY_ID { unsafe { Some(&self.shape.poly) } } else { None }
+   }
+   pub fn access_circle_mut(&mut self) -> Option<&mut Circle> {
+      //! Safe alternative to `expect_circle`.
+      if self.id == Shape::CIRCLE_ID { unsafe { Some(&mut self.shape.circle) } } else { None }
+   }
+   pub fn access_aabb_mut(&mut self) -> Option<&mut Aabb> {
+      //! Safe alternative to `expect_aabb`.
+      if self.id == Shape::AABB_ID { unsafe { Some(&mut self.shape.aabb) } } else { None }
+   }
+   pub fn access_poly_mut(&mut self) -> Option<&mut Poly> {
+      //! Safe alternative to `expect_aabb`.
+      if self.id == Shape::POLY_ID { unsafe { Some(&mut self.shape.poly) } } else { None }
+   }
+
+   pub fn get_id(&self) -> u8 {
+      //! Returns the internal shape id. Compare/Index to CIRCLE_ID, AABB_ID, POLY_ID.
+      self.id
+   }
+   pub unsafe fn expect_circle(&self) -> &Circle {
+      //! Match/Index against `get_id` to ensure safety.
+      &self.shape.circle
+   }
+   pub unsafe fn expect_aabb(&self) -> &Aabb {
+      //! Match/Index against `get_id` to ensure safety.
+      &self.shape.aabb
+   }
+   pub unsafe fn expect_poly(&self) -> &Poly {
+      //! Match/Index against `get_id` to ensure safety.
+      &self.shape.poly
+   }
+   pub unsafe fn expect_circle_mut(&mut self) -> &mut Circle {
+      //! Match/Index against `get_id` to ensure safety.
+      &mut self.shape.circle
+   }
+   pub unsafe fn expect_aabb_mut(&mut self) -> &mut Aabb {
+      //! Match/Index against `get_id` to ensure safety.
+      &mut self.shape.aabb
+   }
+   pub unsafe fn expect_poly_mut(&mut self) -> &mut Poly {
+      //! Match/Index against `get_id` to ensure safety.
+      &mut self.shape.poly
    }
 
    pub fn shape_test(&self, other: &Shape) -> bool {
@@ -562,6 +663,49 @@ impl Shape {
       }*/
    }
 }
+
+/// A `match`-like macro for conveniently accessing the underlying `Circle`/`Aabb`/`Poly` of a `Shape`. 
+/// 
+/// # Examples
+///
+/// ```
+/// let aabb = Aabb::new(0.0, 0.0, 1.0, 1.0);
+/// let shape = Shape::aabb(aabb);
+///
+/// match_shape!(&shape => {
+///    Circle(c) => panic!(),
+///    Aabb(a) => assert_eq(*a, aabb),
+///    Poly(p) => panic!()
+/// });
+/// ```
+/// Or, for mutating a `Shape`: 
+/// ```
+/// let circle = Circle::new(0.5, 1.0, 1.0);
+/// let shape = Shape::circle(circle);
+///
+/// match_shape!(&mut shape => {
+///    Circle(c) => { c.rad = 1.0; assert_eq!(c, Circle::new(1.0, 1.0, 1.0)); },
+///    Aabb(a) => panic!(),
+///    Poly(p) => panic!()
+/// });
+/// ```
+macro_rules! shape_match {
+   (&mut $shape:expr => { Circle($c:ident) => $ce:expr, Aabb($a:ident) => $ae:expr, Poly($p:ident) => $pe:expr } ) => {
+      match (&$shape).get_id() {
+         0u8 => { let $c: &mut Circle; unsafe { $c = $shape.expect_circle_mut(); } $ce },
+         1u8 => { let $a: &mut Aabb; unsafe { $a = $shape.expect_aabb_mut(); } $ae },
+         _ => { let $p: &mut Poly; unsafe { $p = $shape.expect_poly_mut(); } $pe },
+      }
+   };
+   ($shape:expr => { Circle($c:ident) => $ce:expr, Aabb($a:ident) => $ae:expr, Poly($p:ident) => $pe:expr } ) => {
+      match (&$shape).get_id() {
+         0u8 => { let $c: &Circle; unsafe { $c = $shape.expect_circle(); } $ce },
+         1u8 => { let $a: &Aabb; unsafe { $a = $shape.expect_aabb(); } $ae },
+         _ => { let $p: &Poly; unsafe { $p = $shape.expect_poly(); } $pe },
+      }
+   };
+}
+
 impl Drop for Shape {
    fn drop(&mut self) {
       if self.id == 2u8 {
@@ -574,99 +718,76 @@ impl Drop for Shape {
 }
 impl Clone for Shape {
    fn clone(&self) -> Shape {
-      // Safety: Shape.id check
-      unsafe {
-         match self.id {
-            Shape::CIRCLE_ID => Shape { id: Shape::CIRCLE_ID, shape: ShapeUnion { circle: self.shape.circle } },
-            Shape::AABB_ID => Shape { id: Shape::AABB_ID, shape: ShapeUnion { aabb: self.shape.aabb } },
-            _ => Shape { id: Shape::POLY_ID, shape: ShapeUnion { poly: self.shape.poly.clone() } }
-         }
-      }
+      shape_match!(&self => {
+         Circle(c) => Shape { id: Shape::CIRCLE_ID, shape: ShapeUnion { circle: *c } },
+         Aabb(a) => Shape { id: Shape::AABB_ID, shape: ShapeUnion { aabb: *a } },
+         Poly(p) => Shape { id: Shape::POLY_ID, shape: ShapeUnion { poly: ManuallyDrop::new(p.clone()) } }
+      })
+   }
+}
+impl Debug for Shape {
+   fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+      f.debug_struct("Shape")
+         .field("id", &self.id)
+         .field("shape", shape_match!(self => { Circle(c) => c, Aabb(a) => a, Poly(p) => p }))
+         .finish()
    }
 }
 impl Intersect for Shape {
-
    fn get_aabb(&self) -> Aabb {
-      unsafe { // Safety: Shape id verifies union's identity
-         match self.id {
-            Shape::CIRCLE_ID => self.shape.circle.get_aabb(),
-            Shape::AABB_ID => self.shape.aabb.get_aabb(),
-            _ => self.shape.poly.get_aabb(),
-         }
-      }
+      shape_match!(&self => {
+         Circle(c) => c.get_aabb(),
+         Aabb(a) => *a,
+         Poly(p) => p.aabb
+      })
    }
 
    fn point_test(&self, loc: Vector2<f64>) -> bool {
-      unsafe { // Safety: Shape id verifies union's identity
-         match self.id {
-            Shape::CIRCLE_ID => self.shape.circle.point_test(loc),
-            Shape::AABB_ID => self.shape.aabb.point_test(loc),
-            _ => self.shape.poly.point_test(loc),
-         }
-      }
+      shape_match!(&self => {
+         Circle(c) => c.point_test(loc),
+         Aabb(a) => a.point_test(loc),
+         Poly(p) => p.point_test(loc)
+      })
    }
-   /// Returns whether a line-shape intersection occurs.
    fn line_test(&self, a: Vector2<f64>, b: Vector2<f64>) -> bool {
-      unsafe { // Safety: Shape id verifies union's identity
-         match self.id {
-            Shape::CIRCLE_ID => self.shape.circle.line_test(a, b),
-            Shape::AABB_ID => self.shape.aabb.line_test(a, b),
-            _ => self.shape.poly.line_test(a, b),
-         }
-      }
+      //! Returns whether a line-shape intersection occurs.
+      shape_match!(&self => {
+         Circle(c) => c.line_test(a, b),
+         Aabb(aabb) => aabb.line_test(a, b),
+         Poly(p) => p.line_test(a, b)
+      })
    }
-   /// Optionally returns entrypoint of `a`->`b` through `self`.
-   fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<Vector2<f64>> {
-      unsafe { // Safety: Shape id verifies union's identity
-         match self.id {
-            Shape::CIRCLE_ID => self.shape.circle.line_query(a, b),
-            Shape::AABB_ID => self.shape.aabb.line_query(a, b),
-            _ => self.shape.poly.line_query(a, b),
-         }
-      }
+   fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<f64> {
+      //! Returns the coefficient distance along line segment `a->b` an intersection occurs.
+      shape_match!(&self => {
+         Circle(c) => c.line_query(a, b),
+         Aabb(aabb) => aabb.line_query(a, b),
+         Poly(p) => p.line_query(a, b)
+      })
    }
    
    fn circle_test(&self, circle: &Circle) -> bool {
-      unsafe { // Safety: Shape id verifies union's identity
-         match self.id {
-            Shape::CIRCLE_ID => self.shape.circle.circle_test(circle),
-            Shape::AABB_ID => self.shape.aabb.circle_test(circle),
-            _ => self.shape.poly.circle_test(circle),
-         }
-      }
+      shape_match!(&self => {
+         Circle(c) => c.circle_test(circle),
+         Aabb(a) => a.circle_test(circle),
+         Poly(p) => p.circle_test(circle)
+      })
    }
    fn aabb_test(&self, aabb: &Aabb) -> bool {
-      unsafe { // Safety: Shape id verifies union's identity
-         match self.id {
-            Shape::CIRCLE_ID => self.shape.circle.aabb_test(aabb),
-            Shape::AABB_ID => self.shape.aabb.aabb_test(aabb),
-            _ => self.shape.poly.aabb_test(aabb),
-         }
-      }
+      shape_match!(&self => {
+         Circle(c) => c.aabb_test(aabb),
+         Aabb(a) => a.aabb_test(aabb),
+         Poly(p) => p.aabb_test(aabb)
+      })
    }
    fn poly_test(&self, poly: &Poly) -> bool {
-      unsafe { // Safety: Shape id verifies union's identity
-         match self.id {
-            Shape::CIRCLE_ID => self.shape.circle.poly_test(poly),
-            Shape::AABB_ID => self.shape.aabb.poly_test(poly),
-            _ => self.shape.poly.poly_test(poly),
-         }
-      }
+      shape_match!(&self => {
+         Circle(c) => c.poly_test(poly),
+         Aabb(a) => a.poly_test(poly),
+         Poly(p) => p.poly_test(poly)
+      })
    }
 }
-
-
-/*macro_rules! shape_jump_table {
-   ($shape:ident, $result:ident ; ($($i:ident : $t:ty),*) -> $r:ty ; $ce:expr, $ae:expr, $pe:expr ) => {
-      fn circle($($i : $t,)*) -> $r { unsafe { $ce } }
-      fn aabb($($i : $t,)*) -> $r { unsafe { $ae } }
-      fn poly($($i : $t,)*) -> $r { unsafe { $pe } }
-
-      type FnHeader = fn($($t,)*) -> $r;
-      const SHAPE_JUMP_TABLE: [FnHeader; 3] = [circle, aabb, poly];
-      let $result = SHAPE_JUMP_TABLE[$shape.id as usize]($($i,)*);
-   }
-}*/
 
 
 #[cfg(test)]
@@ -676,8 +797,8 @@ mod tests {
 
    #[test]
    fn line_seg_test() {
-      assert_eq!(line_line_query(vec2(0.0, 0.0), vec2(3.0, 1.0), vec2(2.0, 1.0), vec2(2.0, -4.0)), Some(vec2(2.0, 2.0 / 3.0)));
-      assert_eq!(line_line_query(vec2(3.0, 1.0), vec2(0.0, 0.0), vec2(2.0, 1.0), vec2(2.0, -4.0)), Some(vec2(2.0, 1.0 - (1.0 / 3.0))));
+      assert_eq!(seg_seg_query(vec2(0.0, 0.0), vec2(3.0, 1.0), vec2(2.0, 1.0), vec2(2.0, -4.0)), Some(2.0 / 3.0));
+      assert_eq!(seg_seg_query(vec2(3.0, 1.0), vec2(0.0, 0.0), vec2(2.0, 1.0), vec2(2.0, -4.0)), Some(1.0 / 3.0));
    }
 
    #[test]
@@ -688,7 +809,7 @@ mod tests {
       assert_eq!(c.line_query(vec2(3.0, 1.0), vec2(0.0, 1.0)).is_some(), false);
       assert_eq!(c.line_query(vec2(0.0, 0.0), vec2(-1.0, -1.0)).is_some(), false);
       
-      assert_eq!(c.line_query(vec2(-1.0, 0.5), vec2(3.0, 0.5)), Some(vec2(0.0, 0.5)));
+      assert_eq!(c.line_query(vec2(-1.0, 0.5), vec2(3.0, 0.5)), Some(0.25));
       assert_eq!(c.line_query(vec2(0.0, 0.0), vec2(3.0, 1.0)).is_some(), true);
       assert_eq!(c.line_query(vec2(3.0, 1.0), vec2(0.0, 0.0)).is_some(), true);
       assert_eq!(c.line_query(vec2(0.0, 0.9), vec2(3.0, 1.0)).is_some(), true);

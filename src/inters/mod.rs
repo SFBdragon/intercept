@@ -334,7 +334,7 @@ fn poly_circle_test(poly: &Poly, circle: &Circle) -> bool {
 // ---------- Intersect ---------- //
 
 pub trait Intersect {
-   fn get_aabb(&self) -> Aabb;
+   fn get_bounding_box(&self) -> Aabb;
 
    fn point_test(&self, point: Vector2<f64>) -> bool; // point test
    fn line_test(&self, a: Vector2<f64>, b: Vector2<f64>) -> bool; // line intersection
@@ -347,7 +347,7 @@ pub trait Intersect {
 
 impl Intersect for Circle {
    #[inline]
-   fn get_aabb(&self) -> Aabb {
+   fn get_bounding_box(&self) -> Aabb {
       Aabb { min: self.pos.sub_element_wise(self.rad), max: self.pos.add_element_wise(self.rad) }
    }
 
@@ -403,7 +403,7 @@ impl Intersect for Circle {
 }
 impl Intersect for Aabb {
    #[inline]
-   fn get_aabb(&self) -> Aabb {
+   fn get_bounding_box(&self) -> Aabb {
       *self
    }
 
@@ -475,7 +475,7 @@ impl Intersect for Aabb {
 }
 impl Intersect for Poly {
    #[inline]
-   fn get_aabb(&self) -> Aabb {
+   fn get_bounding_box(&self) -> Aabb {
       self.aabb
    }
 
@@ -564,27 +564,27 @@ impl Shape {
       Shape { id: Shape::POLY_ID, shape: ShapeUnion { poly: ManuallyDrop::new(poly) } }
    }
 
-   pub fn access_circle(&self) -> Option<&Circle> {
+   pub fn get_circle(&self) -> Option<&Circle> {
       //! Safe alternative to `expect_circle`.
       if self.id == Shape::CIRCLE_ID { unsafe { Some(&self.shape.circle) } } else { None }
    }
-   pub fn access_aabb(&self) -> Option<&Aabb> {
+   pub fn get_aabb(&self) -> Option<&Aabb> {
       //! Safe alternative to `expect_aabb`.
       if self.id == Shape::AABB_ID { unsafe { Some(&self.shape.aabb) } } else { None }
    }
-   pub fn access_poly(&self) -> Option<&Poly> {
+   pub fn get_poly(&self) -> Option<&Poly> {
       //! Safe alternative to `expect_aabb`.
       if self.id == Shape::POLY_ID { unsafe { Some(&self.shape.poly) } } else { None }
    }
-   pub fn access_circle_mut(&mut self) -> Option<&mut Circle> {
+   pub fn get_circle_mut(&mut self) -> Option<&mut Circle> {
       //! Safe alternative to `expect_circle`.
       if self.id == Shape::CIRCLE_ID { unsafe { Some(&mut self.shape.circle) } } else { None }
    }
-   pub fn access_aabb_mut(&mut self) -> Option<&mut Aabb> {
+   pub fn get_aabb_mut(&mut self) -> Option<&mut Aabb> {
       //! Safe alternative to `expect_aabb`.
       if self.id == Shape::AABB_ID { unsafe { Some(&mut self.shape.aabb) } } else { None }
    }
-   pub fn access_poly_mut(&mut self) -> Option<&mut Poly> {
+   pub fn get_poly_mut(&mut self) -> Option<&mut Poly> {
       //! Safe alternative to `expect_aabb`.
       if self.id == Shape::POLY_ID { unsafe { Some(&mut self.shape.poly) } } else { None }
    }
@@ -620,7 +620,7 @@ impl Shape {
 
    pub fn shape_test(&self, other: &Shape) -> bool {
       // manually implemented jump table optimization
-      // Safety: Shape id verified in jump table
+      // Safety: Shape id verified by jump table indexed by id
       fn circle_circle_inter(su1: &ShapeUnion, su2: &ShapeUnion) -> bool { unsafe { su1.circle.circle_test(&su2.circle) } }
       fn circle_aabb_inter(su1: &ShapeUnion, su2: &ShapeUnion) -> bool { unsafe { su1.circle.aabb_test(&su2.aabb) } }
       fn circle_poly_inter(su1: &ShapeUnion, su2: &ShapeUnion) -> bool { unsafe { su1.circle.poly_test(&su2.poly) } }
@@ -637,30 +637,6 @@ impl Shape {
          [aabb_circle_inter, aabb_aabb_inter, aabb_poly_inter],
          [poly_circle_inter, poly_aabb_inter, poly_poly_inter]];
       SHAPE_JUMP_TABLE[self.id as usize][other.id as usize](&self.shape, &other.shape)
-
-      /*match self {
-         Shape::Aabb(aabb) => {
-            match other {
-               Shape::Aabb(aabb2) => aabb.aabb_test(aabb2),
-               Shape::Circle(c) => aabb.circle_test(c),
-               Shape::Poly(poly) => aabb.poly_test(poly),
-            }
-         },
-         Shape::Circle(c) => {
-            match other {
-               Shape::Aabb(aabb) => c.aabb_test(aabb),
-               Shape::Circle(c2) => c.circle_test(c2),
-               Shape::Poly(poly) => c.poly_test(poly),
-            }
-         },
-         Shape::Poly(poly) => {
-            match other {
-               Shape::Aabb(aabb) => poly.aabb_test(aabb),
-               Shape::Circle(c) => poly.circle_test(c),
-               Shape::Poly(poly2) => poly.poly_test(poly2),
-            }
-         },
-      }*/
    }
 }
 
@@ -734,9 +710,9 @@ impl Debug for Shape {
    }
 }
 impl Intersect for Shape {
-   fn get_aabb(&self) -> Aabb {
+   fn get_bounding_box(&self) -> Aabb {
       shape_match!(&self => {
-         Circle(c) => c.get_aabb(),
+         Circle(c) => c.get_bounding_box(),
          Aabb(a) => *a,
          Poly(p) => p.aabb
       })

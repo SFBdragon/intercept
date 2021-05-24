@@ -16,31 +16,33 @@ pub struct Body {
 
    /// Whether to check other collisions against this `Body`. Will collide with others.
    pub collidable: bool,
+   /// The coefficient of restitution for physics, or a multiplier for simple collision response.
+   pub restitution: f64,
    /// Describes the behaviour of `Body`s that collide with this `Body`.
    pub response: Response,
 }
 impl Body {
-   pub fn new(shapes: Vec<Shape>, pos: Vector2<f64>, is_bullet: bool) -> Body {
+   pub fn new(shapes: Vec<Shape>, pos: Vector2<f64>, vel: Vector2<f64>) -> Body {
       let (mut ix, mut iy, mut ax, mut ay) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
       for s in shapes.iter() {
-         let aabb = s.get_aabb();
+         let aabb = s.get_bounding_box();
          if aabb.min.x < ix { ix = aabb.min.x; }
          if aabb.max.x > ax { ax = aabb.max.x; }
          if aabb.min.y < iy { iy = aabb.min.y; }
          if aabb.max.y > ay { ay = aabb.max.y; }
       }
-      Body { pos, vel: cgmath::vec2(0.0, 0.0), aabb: Aabb::new(ix, iy, ax, ay).translate(pos), shapes, bullet: is_bullet, collidable: true, response: Response::Slide(1.0) }
+      Body { pos, vel, aabb: Aabb::new(ix, iy, ax, ay).translate(pos), shapes, bullet: false, restitution: 1.0, collidable: true, response: Response::Slide }
    }
-   pub fn new_adv(shapes: Vec<Shape>, pos: Vector2<f64>, is_bullet: bool, vel: Vector2<f64>, collidable: bool, response: Response) -> Body {
+   pub fn new_adv(shapes: Vec<Shape>, pos: Vector2<f64>, is_bullet: bool, vel: Vector2<f64>, collidable: bool, restitution: f64, response: Response) -> Body {
       let (mut ix, mut iy, mut ax, mut ay) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
       for s in shapes.iter() {
-         let aabb = s.get_aabb();
+         let aabb = s.get_bounding_box();
          if aabb.min.x < ix { ix = aabb.min.x; }
          if aabb.max.x > ax { ax = aabb.max.x; }
          if aabb.min.y < iy { iy = aabb.min.y; }
          if aabb.max.y > ay { ay = aabb.max.y; }
       }
-      Body { pos, vel, aabb: Aabb::new(ix, iy, ax, ay).translate(pos), shapes, bullet: is_bullet, collidable, response }
+      Body { pos, vel, aabb: Aabb::new(ix, iy, ax, ay).translate(pos), shapes, bullet: is_bullet, collidable, restitution, response }
    }
 
    pub fn get_broad(&self) -> Aabb {
@@ -49,7 +51,7 @@ impl Body {
    }
    pub fn get_shape_broad(&self, shape: usize) -> Aabb {
       //! Returns its `Shape`'s Aabb broadened over `self`'s velocity.
-      self.shapes[shape].get_aabb().translate(self.pos).broaden(self.vel)
+      self.shapes[shape].get_bounding_box().translate(self.pos).broaden(self.vel)
    }
 
    pub fn translate(&mut self, offset: Vector2<f64>) {
@@ -602,7 +604,8 @@ pub fn body_sweep(b1: &Body, b2: &Body, t: f64) -> Option<BodySweptData> {
 }
 
 
-#[cfg(test)]
+// todo: change all of the manual Body {} init to body::new()
+/*#[cfg(test)]
 mod tests {
    use cgmath::vec2;
    use super::*;
@@ -637,7 +640,7 @@ mod tests {
    #[test]
    fn aabb_aabb_swept_test() {
       let aabb1 = Aabb::new(0.0, 0.0, 1.0, 1.0);
-      let b1 = Body { aabb: aabb1, shapes: vec![Shape::aabb(aabb1)], pos: vec2(0.0, 0.0), vel: vec2(1.0, 1.0), bullet: false, collidable: true, response: Response::Slide(1.0)  };
+      let b1 = Body::new(vec![Shape::aabb(aabb1)], vec2(0.0, 0.0), vec2(1.0, 1.0));
       let aabb2 = Aabb::new(2.0, 1.0, 3.0, 2.0);
       let b2 = Body { aabb: aabb2, shapes: vec![Shape::aabb(aabb2)], pos: vec2(0.2, -0.5), vel: vec2(-1.0, 0.0), bullet: false, collidable: true, response: Response::Slide(1.0)  };
 
@@ -761,4 +764,4 @@ mod tests {
       
       assert_eq!(body_sweep(&b1, &b2, 1.0).is_some(), true);
    }
-}
+}*/

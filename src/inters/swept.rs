@@ -1,5 +1,5 @@
 use cgmath::{ElementWise, InnerSpace, Vector2};
-use crate::{inters::{Intersect, Aabb, Circle, Poly, Shape, ShapeUnion}, broadphase::Response};
+use crate::inters::{Intersect, Aabb, Circle, Poly, Shape, ShapeUnion};
 
 #[derive(Debug, Clone)]
 pub struct Body {
@@ -13,16 +13,9 @@ pub struct Body {
    pub vel: Vector2<f64>,
    /// Whether the `Body` is *relatively* fast moving.
    pub bullet: bool,
-
-   /// Whether to check other collisions against this `Body`. Will collide with others.
-   pub collidable: bool,
-   /// The coefficient of restitution for physics, or a multiplier for simple collision response.
-   pub restitution: f64,
-   /// Describes the behaviour of `Body`s that collide with this `Body`.
-   pub response: Response,
 }
 impl Body {
-   pub fn new(shapes: Vec<Shape>, pos: Vector2<f64>, vel: Vector2<f64>) -> Body {
+   pub fn new(shapes: Vec<Shape>, pos: Vector2<f64>, vel: Vector2<f64>, is_bullet: bool) -> Body {
       let (mut ix, mut iy, mut ax, mut ay) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
       for s in shapes.iter() {
          let aabb = s.get_bounding_box();
@@ -31,18 +24,7 @@ impl Body {
          if aabb.min.y < iy { iy = aabb.min.y; }
          if aabb.max.y > ay { ay = aabb.max.y; }
       }
-      Body { pos, vel, aabb: Aabb::new(ix, iy, ax, ay).translate(pos), shapes, bullet: false, restitution: 1.0, collidable: true, response: Response::Slide }
-   }
-   pub fn new_adv(shapes: Vec<Shape>, pos: Vector2<f64>, is_bullet: bool, vel: Vector2<f64>, collidable: bool, restitution: f64, response: Response) -> Body {
-      let (mut ix, mut iy, mut ax, mut ay) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
-      for s in shapes.iter() {
-         let aabb = s.get_bounding_box();
-         if aabb.min.x < ix { ix = aabb.min.x; }
-         if aabb.max.x > ax { ax = aabb.max.x; }
-         if aabb.min.y < iy { iy = aabb.min.y; }
-         if aabb.max.y > ay { ay = aabb.max.y; }
-      }
-      Body { pos, vel, aabb: Aabb::new(ix, iy, ax, ay).translate(pos), shapes, bullet: is_bullet, collidable, restitution, response }
+      Body { pos, vel, aabb: Aabb::new(ix, iy, ax, ay).translate(pos), shapes, bullet: is_bullet }
    }
 
    pub fn get_broad(&self) -> Aabb {

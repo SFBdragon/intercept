@@ -1,7 +1,8 @@
+pub mod swept;
+
 use std::{fmt::{Debug, Formatter}, mem::ManuallyDrop};
 use cgmath::{ElementWise, InnerSpace, Vector2};
 
-pub mod swept;
 
 // ---------- Point & Line ---------- //
 

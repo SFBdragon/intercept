@@ -544,44 +544,41 @@ pub struct BodySweptData {
    pub norm: Vector2<f64>,
 }
 pub fn body_sweep(b1: &Body, b2: &Body, t: f64) -> Option<BodySweptData> {
-   let b1_aabb = &b1.get_broad();
-   let b2_aabb = &b2.get_broad();
-   if b1_aabb.aabb_test(b2_aabb) {
-      if b1.shapes.len() == 1 && b2.shapes.len() == 1 { // single shape optimisation
-         if let Some((t, n)) = shape_sweep(b1, 0, b2, 0, t) {
-            Some(BodySweptData {
-               b1_shape: 0,
-               b2_shape: 0,
-               travel: t,
-               norm: n,
-            })
-         } else {
-            None
-         }
+   //! Returns whether a collision happened between two bodies, and the collision data if so. Does not perform a broadened bounding box collision check.
+   if b1.shapes.len() == 1 && b2.shapes.len() == 1 { // single shape optimisation
+      if let Some((t, n)) = shape_sweep(b1, 0, b2, 0, t) {
+         Some(BodySweptData {
+            b1_shape: 0,
+            b2_shape: 0,
+            travel: t,
+            norm: n,
+         })
       } else {
-         let mut result: Option<BodySweptData> = None;
-         let mut travel = f64::MAX;
+         None
+      }
+   } else {
+      let b1_aabb = &b1.get_broad();
+      let b2_aabb = &b2.get_broad();
+      let mut result: Option<BodySweptData> = None;
+      let mut travel = f64::MAX;
 
-         //let f2: Vec<usize> = (0..b2.shapes.len()).filter(|y| b2.get_shape_broad(*y).aabb_test(b1_aabb)).collect(); // slow
-         for x in (0..b1.shapes.len()).filter(|x| b2_aabb.aabb_test(&b1.get_shape_broad(*x))) {
-            for y in (0..b2.shapes.len()).filter(|y| b1_aabb.aabb_test(&b2.get_shape_broad(*y))) {
-               if let Some((t, n)) = shape_sweep(b1, x, b2, y, t) {
-                  if t < travel {
-                     travel = t;
-                     result = Some(BodySweptData {
-                        b1_shape: x,
-                        b2_shape: y,
-                        norm: n,
-                        travel: t,
-                     })
-                  }
+      //let f2: Vec<usize> = (0..b2.shapes.len()).filter(|y| b2.get_shape_broad(*y).aabb_test(b1_aabb)).collect(); // slow
+      for x in (0..b1.shapes.len()).filter(|x| b2_aabb.aabb_test(&b1.get_shape_broad(*x))) {
+         for y in (0..b2.shapes.len()).filter(|y| b1_aabb.aabb_test(&b2.get_shape_broad(*y))) {
+            if let Some((t, n)) = shape_sweep(b1, x, b2, y, t) {
+               if t < travel {
+                  travel = t;
+                  result = Some(BodySweptData {
+                     b1_shape: x,
+                     b2_shape: y,
+                     norm: n,
+                     travel: t,
+                  })
                }
             }
          }
-         result
       }
-   } else {
-      None
+      result
    }
 }
 

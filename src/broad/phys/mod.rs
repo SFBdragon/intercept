@@ -1,3 +1,6 @@
+
+
+
 //physics
 // coeff of restituion define retention of momentum (otherwise conservation thereof momentum = m(v-u) etc)
 // coeff of friction define force against movement perp to norm

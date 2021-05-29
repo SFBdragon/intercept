@@ -1,5 +1,5 @@
-
-
+use crate::inters::swept::{Body, BodySweptData};
+use cgmath::{ElementWise, InnerSpace, Vector2};
 
 /// Describes the behaviour of `Body`s after collision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -8,7 +8,6 @@ pub enum Response {
    Deflect = 1,
    Slide = 2,
 }
-
 
 struct ResData {
    /// Whether to check other collisions against this `Body`. Will collide with others.
@@ -20,7 +19,7 @@ struct ResData {
 }
 
 pub struct Cosmos {
-   pub table: Vec<(Body, ResData, str)>,
+   table: Vec<(Body, ResData, String)>,
    pub gravity: Vector2<f64>,
    // ...
 }

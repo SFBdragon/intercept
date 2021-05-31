@@ -1,134 +1,218 @@
-pub mod cosmos;
-pub mod phys;
+pub mod response;
 
-use crate::{Body, BodySweptData, swept};
-use std::{collections::HashSet, ops::Range, thread};
+use std::any::Any;
+use crate::narrow::swept::{Body, BodySweptData};
+use self::response::Responder;
+use cgmath::Vector2;
+use fnv::{FnvHashMap, FnvHashSet};
 use indexmap::IndexSet;
 
 
-type NoCollResponse = fn(usize);
-type CollResponse = fn(usize, usize, &BodySweptData);
-type BodyIndex<'a> = fn(usize) -> &'a Body;
+#[derive(Debug, Clone, Copy)]
+pub struct CollData {
+   /// The index of this Collider's colliding Shape.
+   pub self_shape: usize,
+   /// The index of the other Collider's colliding Shape.
+   pub other_shape: usize,
+   /// The fraction of this Body's velocity until collision.
+   pub travel: f64,
+   /// The normal from the other collider.
+   pub norm: Vector2<f64>,
+}
+#[inline]
+fn swept_to_coll_data(data: BodySweptData) -> (CollData, CollData) {(
+   CollData { self_shape: data.b1_shape, other_shape: data.b2_shape, travel: data.travel, norm: data.norm }, // fixme: data.travel does not take into account substepping carry?
+   CollData { self_shape: data.b2_shape, other_shape: data.b1_shape, travel: data.travel, norm: -data.norm }
+)}
 
-#[inline] // this should be inlined where used to optimise away all(?) the function calls
-fn sweep_and_prune(index: fn(usize) -> &'static Body, ncr: NoCollResponse, cr: CollResponse, mut sort: Vec<(bool, usize, f64)>, t: f64,
-   adds: Range<usize>, rems: HashSet<usize>) -> Vec<(bool, usize, f64)> {
-   //! Incorporates body adds and removals, and performs a [sweep and prune](https://en.wikipedia.org/wiki/Sweep_and_prune) broadphase algorithm implementation.
+struct Collider { // todo: finalize
+   /// The body.
+   pub body: Body,
+
+   /// Toggles whether to not invoke a collision response from colliding Colliders.
+   pub is_trigger: bool,
+   /// Handles collisions and triggers.
+   pub responder: Box<dyn Responder>,
+
+   /// Arbitrary data.
+   pub user_data: Box<dyn Any>,
+}
+
+pub struct Cosmos { // todo: document
+   id_counter: usize,
+   table: FnvHashMap<usize, Collider>,
+
+   adds: Option<usize>, // id of first of add candidates
+   rems: FnvHashSet<usize>, // ids of all removal candidates
+
+   pub is_be_updated: bool,
+   pub is_be_sorted: bool,
 
    // the x axis is chosen to be the discrimination axis due to (handling a row of columns most efficiently): 
    //    1. it is the most 'primitave' axis
    //    2. screens/viewports are usually wider than they are tall
    //    3. game worlds are usually wider than they are tall
    //    4. Character/humanoid hitboxes are usually taller than they are wide, and next to each other
+   pub be_list: Vec<(bool, usize, f64)>,
+}
 
-   let len = sort.len();
-   let update = move |mut sort: Vec<(bool, usize, f64)>| { 
-      // update b & e values
-      for v in sort.iter_mut() {
-         let b = index(v.1);
-         v.2 = match v.0 { // todo: check perf against inlign assign and if statement?
-            false => f64::min(b.aabb.min.x, b.aabb.min.x + b.vel.x), // b value
-            true => f64::max(b.aabb.max.x, b.aabb.max.x + b.vel.x), // e value
-         };
+impl Cosmos {
+
+   pub fn get_be_list_indecies(&self, id: usize) -> (usize, usize) {
+      //! Binary searches be_list for the b & e values belonging to the id provided. Returns indecies of `(b, e)`. Ensure be_list is sorted.
+      panic!() // todo: implement
+   }
+   pub fn get_be_list_position(&self, x: f64) -> usize {
+      //! Binary searches be_list for the index of- or the index before the given x value. Ensure be_list is sorted.
+      panic!() // todo: implement
+   }
+
+
+   pub fn update(&mut self) { // todo: possibly merge with sort()
+      //! Updates be_list's b & e values. Update `Body`s prior. Does not process adds and removals; use incorporate() instead for that.
+      for v in self.be_list.iter_mut() {
+         if let Some(c) = self.table.get(&v.1) {
+            match v.0 {
+               false => v.2 = f64::min(c.body.aabb.min.x, c.body.aabb.min.x + c.body.vel.x), // b value
+               true => v.2 = f64::max(c.body.aabb.max.x, c.body.aabb.max.x + c.body.vel.x), // e value
+            }
+         }
       }
+      self.is_be_updated = true;
+   }
+
+   pub fn sort(&mut self) {
+      // todo: should sorting unupdated be allowed?
+      if !self.is_be_updated { println!("WARNING: Cosmos::sort(&mut self) called on a potentially out-of-date be_list.") }
 
       // sort b & e values
       // insertion sort due to its adaptivity & efficiency: sort is expected to be mostly sorted due to temporal cohesion
-      insertion_be(&mut sort, 0, len - 1);
-      sort
-   };
+      let len = self.be_list.len();
+      insertion_be(&mut self.be_list, 0, len - 1);
+      self.is_be_sorted = true;
+   }
 
-   sort = if adds.len() > 0 {
-      let new_len = len - rems.len() * 2 + adds.len() * 2;
+   pub fn incorporate(&mut self) {
+      //! Merges/Culls Collider additions and removals for be_list if/as necessary. Updates and sorts the list if not already done.
 
-      // --- create added, sorted, be values --- //
-      // create all the new b & e values necessary
-      let add_len = adds.len() * 2;
-      let mut add = Vec::with_capacity(add_len);
-      for i in adds {
-         let b = index(i);
-         add.push((false, i, f64::min(b.aabb.min.x, b.aabb.min.x + b.vel.x)));
-         add.push((false, i, f64::max(b.aabb.max.x, b.aabb.max.x + b.vel.x)));
-      }
-      // sort new b & e values
-      // there are no gaurantees as to order, thus a quicksort(-insertion hybrid) is used
-      quicksort_be(&mut add, 0, add_len - 1);
+      // Ensure be_list merges validly
+      if self.is_be_updated { self.update(); }
+      if self.is_be_sorted { self.sort(); }
 
-      // --- update and sort old sort data --- //
-      let old = update(sort);
+      // Create list for added b & e values. This may be a candidate for parallelization?
+      if let Some(id) = self.adds {
+         // create new b & e values
+         let add_len = (self.id_counter - id) * 2; // gives the quantity of bodies added * 2
+         let mut add = Vec::with_capacity(add_len);
+         for i in id..self.id_counter {
+            if let Some(c) = self.table.get(&i) {
+               add.push((false, i, f64::min(c.body.aabb.min.x, c.body.aabb.min.x + c.body.vel.x)));
+               add.push((false, i, f64::max(c.body.aabb.max.x, c.body.aabb.max.x + c.body.vel.x)));
+            }
+         }
+         // sort new b & e values
+         // there are no gaurantees as to order, thus a quicksort(-insertion hybrid) is used
+         quicksort_be(&mut add, 0, add_len - 1);
 
-      // --- merge old and new data ---//
-      let mut new_sort = Vec::with_capacity(new_len);
-      let mut old_index = 0;
-      let mut add_index = 0;
-
-      for _ in 0..new_len {
-         if old[old_index].2 > add[add_index].2 {
-            new_sort.push(add[add_index]);
-            add_index = add_index + 1;
-         } else {
-            if !rems.contains(&old[old_index].1) { new_sort.push(old[old_index]); }
+         let mut new_be_list = Vec::with_capacity(self.be_list.len() + add_len - self.rems.len());
+         let mut old_index = 0;
+         if self.rems.len() > 0 { // If removals as well as additions must be accounted for.
+            let mut add_index = 0;
+            for _ in 0..new_be_list.len() {
+               if self.be_list[old_index].2 > add[add_index].2 {
+                  new_be_list.push(add[add_index]);
+                  add_index = add_index + 1;
+               } else {
+                  if !self.rems.contains(&self.be_list[old_index].1) { new_be_list.push(self.be_list[old_index]); }
+                  old_index = old_index + 1;
+               }
+            }
+         } else { // If only additions must be accounted for.
+            let mut add_index = 0;
+            for _ in 0..new_be_list.len() {
+               if self.be_list[old_index].2 > add[add_index].2 {
+                  new_be_list.push(add[add_index]);
+                  add_index = add_index + 1;
+               } else {
+                  new_be_list.push(self.be_list[old_index]);
+                  old_index = old_index + 1;
+               }
+            }
+         }
+      } else if self.rems.len() > 0 { // If only removals are in order. Else, no action required.
+         let mut new_be_list = Vec::with_capacity(self.be_list.len() - self.rems.len());
+         let mut old_index = 0;
+         for _ in 0..new_be_list.len() {
+            if !self.rems.contains(&self.be_list[old_index].1) { new_be_list.push(self.be_list[old_index]); }
             old_index = old_index + 1;
          }
+         self.be_list = new_be_list;
       }
 
-      new_sort
-   } else if rems.len() > 0 {
-      let new_len = len - rems.len() * 2;
-      let mut new_sort = Vec::with_capacity(new_len);
-      let mut index = 0;
+      self.adds = None;
+      self.rems = FnvHashSet::default();
+   }
 
-      for _ in 0..new_len {
-         if !rems.contains(&sort[index].1) { new_sort.push(sort[index]); }
-         index = index + 1;
-      }
+   pub fn step(&mut self, t: f64) {
+      // todo: remove or ?:self.sweep_and_prune();
+   }
 
-      update(new_sort)
-   } else {
-      update(sort)
-   };
-   
-   let mut set = IndexSet::<usize>::new();
-   for v in sort.iter() {
-      match v.0 {
-         false => { let _ =  set.insert(v.1); }, // send b val to active
-         true => {
-            set.remove(&v.1);
-            if set.len() > 0 {
-               let b1 = index(v.1);
-               let b1b_min = f64::min(b1.aabb.min.y, b1.aabb.min.y + b1.vel.y);
-               let b1b_max = f64::max(b1.aabb.max.y, b1.aabb.max.y + b1.vel.y);
+   fn sweep_and_prune(&mut self, t: f64) { // todo: implement carries, recur, etc
+      //! Performs a [sweep and prune](https://en.wikipedia.org/wiki/Sweep_and_prune) broadphase algorithm implementation.
+      
+      let mut set = IndexSet::<usize>::new();
+      for v in self.be_list.iter() {
+         match v.0 {
+            false => { let _ = set.insert(v.1); }, // send b val to active
+            true => {
+               set.remove(&v.1);
+               if set.len() > 0 {
+                  if let Some(c1) = self.table.get(&v.1) {
+                     let b1b_min = f64::min(c1.body.aabb.min.y, c1.body.aabb.min.y + c1.body.vel.y);
+                     let b1b_max = f64::max(c1.body.aabb.max.y, c1.body.aabb.max.y + c1.body.vel.y);
 
-               let mut data = BodySweptData { b1_shape: usize::MAX, b2_shape: usize::MAX, travel: f64::INFINITY, norm: cgmath::vec2(0.0, 0.0) };
-               let mut second = 0;
-               for u in set.iter() {
-                  let b2 = index(*u);
-                  let b2b_min = f64::min(b2.aabb.min.y, b2.aabb.min.y + b2.vel.y);
-                  let b2b_max = f64::max(b2.aabb.max.y, b2.aabb.max.y + b2.vel.y);
+                     let mut data = BodySweptData { b1_shape: usize::MAX, b2_shape: usize::MAX, travel: f64::INFINITY, norm: cgmath::vec2(0.0, 0.0) };
+                     let mut second = 0;
+                     for u in set.iter() {
+                        if let Some(c2) = self.table.get(u) {
+                           let b2b_min = f64::min(c2.body.aabb.min.y, c2.body.aabb.min.y + c2.body.vel.y);
+                           let b2b_max = f64::max(c2.body.aabb.max.y, c2.body.aabb.max.y + c2.body.vel.y);
 
-                  // the final portion of the broad bounding box bounds check
-                  if b1b_min <= b2b_max && b1b_max >= b2b_min {
-                     if let Some(bsd) = swept::body_sweep(b1, b2, t) {
-                        if bsd.travel < data.travel {
-                           data = bsd;
-                           second = *u;
+                           // the final portion of the broad bounding box bounds check
+                           if b1b_min <= b2b_max && b1b_max >= b2b_min {
+                              if let Some(bsd) = crate::narrow::swept::body_sweep(&c1.body, &c2.body, t) {
+                                 if bsd.travel < data.travel {
+                                    data = bsd;
+                                    second = *u;
+                                 }
+                              }
+                           }
                         }
                      }
-                  }
-               }
 
-               if data.b1_shape != usize::MAX {
-                  cr(v.1, second, &data);
-               } else {
-                  ncr(v.1);
+                     // todo:
+                     if data.b1_shape != usize::MAX {
+                        // update positions
+
+                        // (get mut c1).responder.response(cosmos, vel, self_id, other_id, data) // if other !trigger
+                        // (get mut c2 from second).responder.response(cosmos, vel, self_id, other_id, data) // if other !trigger
+
+                        // trigger c1 & c2
+
+                        // put in a queue of stuff that needs to be checked again
+                     } else {
+                        // put into a queue for stuff considered uncollided
+                     }
+                  } else {
+                     panic!();
+                  }
                }
             }
          }
       }
    }
-
-   return sort
 }
+
 
 // ---------- Sorting Algorithms ---------- //
 

@@ -1,5 +1,5 @@
 use cgmath::{ElementWise, InnerSpace, Vector2};
-use crate::inters::{Intersect, Aabb, Circle, Poly, Shape, ShapeUnion};
+use crate::narrow::{Intersect, Aabb, Circle, Poly, Shape, ShapeUnion};
 
 #[derive(Debug, Clone)]
 pub struct Body {
@@ -532,13 +532,11 @@ fn shape_sweep(b1: &Body, s1: usize, b2: &Body, s2: usize, t: f64) -> Option<(f6
    SHAPE_JUMP_TABLE[s1s.id as usize][s2s.id as usize](b1, &s1s.shape, b2, &s2s.shape, t)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct BodySweptData {
-   /// Index of the colliding shape of body.
    pub b1_shape: usize,
-   /// Index of the colliding shape of stat.
    pub b2_shape: usize,
-   /// Fraction of bodys' velocity until collision.
+   /// Fraction of bodies' velocity until collision.
    pub travel: f64,
    /// Collision normal from shape of b2.
    pub norm: Vector2<f64>,

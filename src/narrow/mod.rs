@@ -1,3 +1,4 @@
+//! Narrowphase data and logic module.
 pub mod swept;
 
 use std::{fmt::{Debug, Formatter}, mem::ManuallyDrop};

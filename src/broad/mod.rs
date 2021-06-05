@@ -1,46 +1,42 @@
-pub mod response;
+pub mod reacter;
 
-use std::any::Any;
-use crate::narrow::swept::{Body, BodySweptData};
-use self::response::Responder;
-use cgmath::Vector2;
-use fnv::{FnvHashMap, FnvHashSet};
-use indexmap::IndexSet;
+use std::collections::HashMap;
+
+use crate::{broad::reacter::Reacter, narrow::swept::{Body, BodySweepData}};
+use fnv::{FnvBuildHasher, FnvHashMap, FnvHashSet};
+use indexmap::IndexMap;
+use cgmath::ElementWise;
 
 
-#[derive(Debug, Clone, Copy)]
-pub struct CollData {
-   /// The index of this Collider's colliding Shape.
-   pub self_shape: usize,
-   /// The index of the other Collider's colliding Shape.
-   pub other_shape: usize,
-   /// The fraction of this Body's velocity until collision.
-   pub travel: f64,
-   /// The normal from the other collider.
-   pub norm: Vector2<f64>,
+pub enum ColliderType {
+   /// Boolean indicates whether reacters should have this static Collider's velocity added to theirs as a result of the collision.
+   Static(bool),
+   Reacter(Box<dyn Reacter>),
 }
-#[inline]
-fn swept_to_coll_data(data: BodySweptData) -> (CollData, CollData) {(
-   CollData { self_shape: data.b1_shape, other_shape: data.b2_shape, travel: data.travel, norm: data.norm }, // fixme: data.travel does not take into account substepping carry?
-   CollData { self_shape: data.b2_shape, other_shape: data.b1_shape, travel: data.travel, norm: -data.norm }
-)}
 
-struct Collider { // todo: finalize
-   /// The body.
+/// Colliders are units managed by a Plane. Colliders can be classified into two types: static, and reacting. Defined by whether `reacter.is_some() == true`. 
+/// Changes in position are managed by the Plane, changes in velocity are managed by reactions/user. 
+/// Mutating body's position is allowed, but may cause tunneling, as pre-solving is solely used, create Reacters with care.
+/// This layout of responsibility is designed to be ideal for games such as platformers that usually would implement custom behaviours for all moving entities, instead of physical.
+/// If you would prefer, a physically based simulation broadphase is implemented under *crate::broad::phys::Cosmos*. <br>
+/// *Static-Static*   : No behaviour <br>
+/// *Static-Reacting* : Reacter `.reacter.react(..)`, Static `.trigger(..)` <br>
+/// *Reacting-Reacting* : Reacter `.trigger(..)`, Reacter `.trigger(..)`
+pub struct Collider {
    pub body: Body,
+   broad_y: (f64, f64),
 
-   /// Toggles whether to not invoke a collision response from colliding Colliders.
-   pub is_trigger: bool,
-   /// Handles collisions and triggers.
-   pub responder: Box<dyn Responder>,
-
-   /// Arbitrary data.
-   pub user_data: Box<dyn Any>,
+   /// The Reacter handles the collision of this Collider and one that does not react.
+   pub reacter: ColliderType,
+   /// The trigger is invoked for reacters against reacters, and for static colliders against reacters only.
+   pub trigger: Box<dyn Fn(usize, usize, BodySweepData, f64)>,
 }
 
-pub struct Cosmos { // todo: document
-   id_counter: usize,
-   table: FnvHashMap<usize, Collider>,
+
+
+pub struct Plane { // todo: document
+   pub id_counter: usize,
+   pub table: FnvHashMap<usize, Collider>,
 
    adds: Option<usize>, // id of first of add candidates
    rems: FnvHashSet<usize>, // ids of all removal candidates
@@ -56,14 +52,14 @@ pub struct Cosmos { // todo: document
    pub be_list: Vec<(bool, usize, f64)>,
 }
 
-impl Cosmos {
+impl Plane {
 
    pub fn get_be_list_indecies(&self, id: usize) -> (usize, usize) {
       //! Binary searches be_list for the b & e values belonging to the id provided. Returns indecies of `(b, e)`. Ensure be_list is sorted.
       panic!() // todo: implement
    }
    pub fn get_be_list_position(&self, x: f64) -> usize {
-      //! Binary searches be_list for the index of- or the index before the given x value. Ensure be_list is sorted.
+      //! Binary searches be_list for the index of- or the index after the given x value. Ensure be_list is sorted.
       panic!() // todo: implement
    }
 
@@ -153,63 +149,168 @@ impl Cosmos {
       self.rems = FnvHashSet::default();
    }
 
-   pub fn step(&mut self, t: f64) {
-      // todo: remove or ?:self.sweep_and_prune();
+   fn reposition_val(&mut self, index: usize, x: f64) {
+      let old_val = self.be_list[index];
+      if x > old_val.2 {
+         let mut j = index + 1;
+         while j < self.be_list.len() && self.be_list[j].2 < x {
+            self.be_list[j-1] = self.be_list[j];
+            j = j + 1;
+         }
+         self.be_list[j - 1] = (old_val.0, old_val.1, x);
+      } else {
+         let mut j = index - 1;
+         while j >= 0 && self.be_list[j].2 > x {
+            self.be_list[j+1] = self.be_list[j];
+            j = j - 1;
+         }
+         self.be_list[j + 1] = (old_val.0, old_val.1, x);
+      }
    }
 
-   fn sweep_and_prune(&mut self, t: f64) { // todo: implement carries, recur, etc
+   pub fn sweep_and_prune(&mut self, t: f64, epsilon: f64) { // todo: implement carries, recur, etc
       //! Performs a [sweep and prune](https://en.wikipedia.org/wiki/Sweep_and_prune) broadphase algorithm implementation.
-      
-      let mut set = IndexSet::<usize>::new();
-      for v in self.be_list.iter() {
-         match v.0 {
-            false => { let _ = set.insert(v.1); }, // send b val to active
+
+      let mut active = IndexMap::with_hasher(FnvBuildHasher::default()); // id, b be index
+      let mut candidates = HashMap::with_hasher(FnvBuildHasher::default()); // id, (other id, other be b, bsd)
+      let mut remainders = IndexMap::with_hasher(FnvBuildHasher::default()); // id, (be val indecies, x belist pos's)
+      for (be_index, val) in self.be_list.iter().enumerate() {
+         let id1 = val.1;
+         match val.0 {
+            false => { let _ = active.insert(id1, be_index); }, // send b val to active
             true => {
-               set.remove(&v.1);
-               if set.len() > 0 {
-                  if let Some(c1) = self.table.get(&v.1) {
-                     let b1b_min = f64::min(c1.body.aabb.min.y, c1.body.aabb.min.y + c1.body.vel.y);
-                     let b1b_max = f64::max(c1.body.aabb.max.y, c1.body.aabb.max.y + c1.body.vel.y);
+               let val1_be_b = active.remove(&id1).expect("No active list entry for e value.");
+               // Check if there are any potential colliding Colliders according to Sweep And Prune.
+               if active.len() == 0 { continue; }
+               // Retrieve the collider.
+               let c1 = self.table.get(&id1).expect("Table does not contain Id of val in be_list");
+               // Retrieve a previous collision candidate if any, else init to invalid data.
+               let mut was_candidate: bool;
+               let (mut id2, mut val2_be_b, mut data) = 
+                  if let Some(c) = candidates.get(&id1) { was_candidate = true; *c 
+                  } else { was_candidate = false; (usize::MAX, usize::MAX, BodySweepData::new_invalid()) };
 
-                     let mut data = BodySweptData { b1_shape: usize::MAX, b2_shape: usize::MAX, travel: f64::INFINITY, norm: cgmath::vec2(0.0, 0.0) };
-                     let mut second = 0;
-                     for u in set.iter() {
-                        if let Some(c2) = self.table.get(u) {
-                           let b2b_min = f64::min(c2.body.aabb.min.y, c2.body.aabb.min.y + c2.body.vel.y);
-                           let b2b_max = f64::max(c2.body.aabb.max.y, c2.body.aabb.max.y + c2.body.vel.y);
-
-                           // the final portion of the broad bounding box bounds check
-                           if b1b_min <= b2b_max && b1b_max >= b2b_min {
-                              if let Some(bsd) = crate::narrow::swept::body_sweep(&c1.body, &c2.body, t) {
-                                 if bsd.travel < data.travel {
-                                    data = bsd;
-                                    second = *u;
-                                 }
-                              }
-                           }
+               // Find the closest collision, if any.
+               for (v2_id, v2_be_b) in active.iter() {
+                  let c2 = self.table.get(&id2).expect("Table does not contain Id of active collider.");
+                  if c1.broad_y.0 <= c2.broad_y.1 && c1.broad_y.1 >= c2.broad_y.0 { // y broad box check
+                     if let Some(bsd) = crate::narrow::swept::body_sweep(&c1.body, &c2.body, t) {
+                        if bsd.travel < data.travel {
+                           was_candidate = false;
+                           data = bsd;
+                           id2 = *v2_id;
+                           val2_be_b = *v2_be_b;
                         }
                      }
+                  }
+               }
 
-                     // todo:
-                     if data.b1_shape != usize::MAX {
-                        // update positions
+               // If a collision candidate has been found, 
+               if id2 != usize::MAX {
+                  // Retrieve all necessary data from c2.
+                  let c2 = self.table.get(&id2).expect("Collider of id2 does not exist.");
+                  let (c2_is_static, c2_vel_add) = if let ColliderType::Static(va) = c2.reacter { 
+                     (true, if va { c2.body.vel } else { cgmath::vec2(0.0, 0.0) } ) 
+                  } else { (false, cgmath::vec2(0.0, 0.0)) };
 
-                        // (get mut c1).responder.response(cosmos, vel, self_id, other_id, data) // if other !trigger
-                        // (get mut c2 from second).responder.response(cosmos, vel, self_id, other_id, data) // if other !trigger
+                  // Modify c1 in response to the collision.
+                  let c1 = if let Some(c) = self.table.get_mut(&id1) { c } else { panic!(); };
+                  let c1_is_static = if let ColliderType::Static(_) = (*c1).reacter { true } else { false };
 
-                        // trigger c1 & c2
+                  if !c2_is_static {
+                     (c1.trigger)(id2, id1, data, epsilon);
+                  } else if c1_is_static {
+                     c1.body.translate(c1.body.vel.mul_element_wise(t * data.travel) + data.norm.mul_element_wise(epsilon));
+                     let vel = if let ColliderType::Reacter(r) = &c1.reacter 
+                        { r.react(c1.body.vel, id1, id2, data, epsilon) } else { panic!() };
+                     c1.body.vel += vel + c2_vel_add;
+                     let broad = c1.body.get_broad();
+                     c1.broad_y = (broad.min.y, broad.max.y);
+                     remainders.insert(id1, ((val1_be_b, be_index), (broad.min.y, broad.max.y)));
+                  }
 
-                        // put in a queue of stuff that needs to be checked again
-                     } else {
-                        // put into a queue for stuff considered uncollided
-                     }
-                  } else {
-                     panic!();
+                  if !was_candidate { // Only insert if the Collider has yet to be processed.
+                     candidates.insert(id2, (id1, val2_be_b, data.invert()));
                   }
                }
             }
          }
       }
+
+      // Resort the collided objects
+      for (_, (indecies, broad_x) ) in remainders.iter() {
+         self.reposition_val(indecies.0, broad_x.0);
+         self.reposition_val(indecies.1, broad_x.1);
+      }
+      active.clear();
+      candidates.clear();
+
+      // todo: complete for remainders
+      for (be_index, val) in self.be_list.iter().enumerate() {
+         let id1 = val.1;
+         match val.0 {
+            false => { let _ = active.insert(id1, be_index); }, // send b val to active
+            true => {
+
+               let val1_be_b = active.remove(&id1).expect("No active list entry for e value.");
+               // Check if there are any potential colliding Colliders according to Sweep And Prune.
+               if active.len() == 0 { continue; }
+               // Retrieve the collider.
+               let c1 = self.table.get(&id1).expect("Table does not contain Id of val in be_list");
+               // Retrieve a previous collision candidate if any, else init to invalid data.
+               let mut was_candidate: bool;
+               let (mut id2, mut val2_be_b, mut data) = 
+                  if let Some(c) = candidates.get(&id1) { was_candidate = true; *c 
+                  } else { was_candidate = false; (usize::MAX, usize::MAX, BodySweepData::new_invalid()) };
+
+               // Find the closest collision, if any.
+               for (v2_id, v2_be_b) in active.iter() {
+                  let c2 = self.table.get(&id2).expect("Table does not contain Id of active collider.");
+                  if c1.broad_y.0 <= c2.broad_y.1 && c1.broad_y.1 >= c2.broad_y.0 { // y broad box check
+                     if let Some(bsd) = crate::narrow::swept::body_sweep(&c1.body, &c2.body, t) {
+                        if bsd.travel < data.travel {
+                           was_candidate = false;
+                           data = bsd;
+                           id2 = *v2_id;
+                           val2_be_b = *v2_be_b;
+                        }
+                     }
+                  }
+               }
+
+               // If a collision candidate has been found, 
+               if id2 != usize::MAX {
+                  // Retrieve all necessary data from c2.
+                  let c2 = self.table.get(&id2).expect("Collider of id2 does not exist.");
+                  let (c2_is_static, c2_vel_add) = if let ColliderType::Static(va) = c2.reacter { 
+                     (true, if va { c2.body.vel } else { cgmath::vec2(0.0, 0.0) } ) 
+                  } else { (false, cgmath::vec2(0.0, 0.0)) };
+
+                  // Modify c1 in response to the collision.
+                  let c1 = if let Some(c) = self.table.get_mut(&id1) { c } else { panic!(); };
+                  let c1_is_static = if let ColliderType::Static(_) = (*c1).reacter { true } else { false };
+
+                  if !c2_is_static {
+                     (c1.trigger)(id2, id1, data, epsilon);
+                  } else if c1_is_static {
+                     c1.body.translate(c1.body.vel.mul_element_wise(t * data.travel) + data.norm.mul_element_wise(epsilon));
+                     let vel = if let ColliderType::Reacter(r) = &c1.reacter 
+                        { r.react(c1.body.vel, id1, id2, data, epsilon) } else { panic!() };
+                     c1.body.vel += vel + c2_vel_add;
+                     let broad = c1.body.get_broad();
+                     c1.broad_y = (broad.min.y, broad.max.y);
+                     remainders.insert(id1, ((val1_be_b, be_index), (broad.min.y, broad.max.y)));
+                  }
+
+                  if !was_candidate { // Only insert if the Collider has yet to be processed.
+                     candidates.insert(id2, (id1, val2_be_b, data.invert()));
+                  }
+               }
+            }
+         }
+      }
+      
+      // todo: update all to completion
    }
 }
 

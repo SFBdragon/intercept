@@ -1,3 +1,5 @@
+use core::f64;
+
 use cgmath::{ElementWise, InnerSpace, Vector2};
 use crate::narrow::{Intersect, Aabb, Circle, Poly, Shape, ShapeUnion};
 
@@ -533,22 +535,35 @@ fn shape_sweep(b1: &Body, s1: usize, b2: &Body, s2: usize, t: f64) -> Option<(f6
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct BodySweptData {
+pub struct BodySweepData {
    pub b1_shape: usize,
    pub b2_shape: usize,
-   /// Fraction of bodies' velocity until collision.
+   /// Fraction of bodies' velocity until collision occurs.
    pub travel: f64,
    /// Collision normal from shape of b2.
    pub norm: Vector2<f64>,
 }
-pub fn body_sweep(b1: &Body, b2: &Body, t: f64) -> Option<BodySweptData> {
-   //! Returns whether a collision happened between two bodies, and the collision data if so. Does not perform a broadened bounding box collision check.
+impl BodySweepData {
+   pub fn new_invalid() -> BodySweepData {
+      //! Returns a BodySweptData struct with `usize::MAX` shape indecies, `f64::INFINITY` travel and `0.0, 0.0` normal.
+      BodySweepData { b1_shape: usize::MAX, b2_shape: usize::MAX, travel: f64::INFINITY, norm: cgmath::vec2(0.0, 0.0) }
+   }
+
+   pub fn invert(self) -> BodySweepData {
+      //! Utility function for reversing the 'perspective' of the BodySweepData from b1 to b2.
+      BodySweepData { b1_shape: self.b2_shape, b2_shape: self.b1_shape, travel: self.travel, norm: -self.norm }
+   }
+}
+
+pub fn body_sweep(b1: &Body, b2: &Body, t: f64) -> Option<BodySweepData> {
+   //! Returns whether a collision happened between two bodies, and the collision data if so. <br>
+   //! Does not perform a broadened bounding box collision check.
    if b1.shapes.len() == 1 && b2.shapes.len() == 1 { // single shape optimisation
-      if let Some((t, n)) = shape_sweep(b1, 0, b2, 0, t) {
-         Some(BodySweptData {
+      if let Some((travel, n)) = shape_sweep(b1, 0, b2, 0, t) {
+         Some(BodySweepData {
             b1_shape: 0,
             b2_shape: 0,
-            travel: t,
+            travel: travel * t,
             norm: n,
          })
       } else {
@@ -557,20 +572,20 @@ pub fn body_sweep(b1: &Body, b2: &Body, t: f64) -> Option<BodySweptData> {
    } else {
       let b1_aabb = &b1.get_broad();
       let b2_aabb = &b2.get_broad();
-      let mut result: Option<BodySweptData> = None;
-      let mut travel = f64::MAX;
+      let mut result: Option<BodySweepData> = None;
+      let mut min_travel = f64::MAX;
 
       //let f2: Vec<usize> = (0..b2.shapes.len()).filter(|y| b2.get_shape_broad(*y).aabb_test(b1_aabb)).collect(); // slow
       for x in (0..b1.shapes.len()).filter(|x| b2_aabb.aabb_test(&b1.get_shape_broad(*x))) {
          for y in (0..b2.shapes.len()).filter(|y| b1_aabb.aabb_test(&b2.get_shape_broad(*y))) {
-            if let Some((t, n)) = shape_sweep(b1, x, b2, y, t) {
-               if t < travel {
-                  travel = t;
-                  result = Some(BodySweptData {
+            if let Some((travel, n)) = shape_sweep(b1, x, b2, y, t) {
+               if t < min_travel {
+                  min_travel = t;
+                  result = Some(BodySweepData {
                      b1_shape: x,
                      b2_shape: y,
                      norm: n,
-                     travel: t,
+                     travel: travel * t,
                   })
                }
             }

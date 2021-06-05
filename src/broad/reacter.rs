@@ -1,16 +1,25 @@
+use cgmath::Vector2;
 
-use super::{Cosmos, CollData};
-use cgmath::{Vector2};
+use crate::BodySweepData;
 
-pub trait Responder {
-   /// Return the velocity to resume after a collision. Collisions with triggers void this call.
-   fn response(&self, cosmos: &mut Cosmos, vel: Vector2<f64>, self_id: usize, other_id: usize, data: CollData) -> Vector2<f64>;
-   /// Execute logic immediately after a collision/trigger has occured.
-   fn trigger(&self, cosmos: &mut Cosmos, self_id: usize, other_id: usize, data: CollData);
+pub trait Reacter {
+   /// Return the velocity to resume after a collision.
+   fn react(&self, vel: Vector2<f64>, self_id: usize, other_id: usize, data: BodySweepData, epsilon: f64) -> Vector2<f64>;
+}
+/// React by maintaining previous velocity in the direction perpendicular to the normal.
+pub struct SlideReacter {
+   norm_from_constricting: Vector2<f64>,
+   vel_of_constricting: Vector2<f64>,
+}
+impl Reacter for SlideReacter {
+   fn react(&self, vel: Vector2<f64>, self_id: usize, other_id: usize, data: BodySweepData, epsilon: f64) -> Vector2<f64> {
+      panic!()
+   }
 }
 
 
-// todo: create slide responder, deflect responder, phase responder, physics responder, etc.
+
+// todo: create halt responder, deflect responder, etc.
 
 
 /* fn slide_response(b: &mut Body, resti: f64, data: &BodySweptData) {

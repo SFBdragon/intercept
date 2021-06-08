@@ -44,6 +44,62 @@ impl Body {
       self.aabb = self.aabb.translate(offset);
    }
 }
+impl Intersect for Body {
+   #[inline]
+   fn get_bounding_box(&self) -> Aabb {
+      self.aabb
+   }
+   
+   fn point_test(&self, point: Vector2<f64>) -> bool {
+      for s in self.shapes.iter() {
+         if s.point_test(point) {
+            return true
+         }
+      }
+      false
+   }
+   fn line_test(&self, a: Vector2<f64>, b: Vector2<f64>) -> bool {
+      for s in self.shapes.iter() {
+         if s.line_test(a, b) {
+            return true
+         }
+      }
+      false
+   }
+   fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<f64> {
+      for s in self.shapes.iter() {
+         if let Some(r) = s.line_query(a, b) {
+            return Some(r)
+         }
+      }
+      None
+   }
+   
+   fn circle_test(&self, circle: &Circle) -> bool {
+      for s in self.shapes.iter() {
+         if s.circle_test(circle) {
+            return true
+         }
+      }
+      false
+   }
+   fn aabb_test(&self, aabb: &Aabb) -> bool {
+      for s in self.shapes.iter() {
+         if s.aabb_test(aabb) {
+            return true
+         }
+      }
+      false
+   }
+   fn poly_test(&self, poly: &Poly) -> bool {
+      for s in self.shapes.iter() {
+         if s.poly_test(poly) {
+            return true
+         }
+      }
+      false
+   }
+}
 
 
 // ---------- Sweep Helper Functions ---------- //

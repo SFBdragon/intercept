@@ -1,12 +1,10 @@
 pub mod reacter;
 
-use core::panic;
-use std::{collections::HashMap, fmt::Debug, hash::BuildHasherDefault, mem::ManuallyDrop};
-
-use crate::{broad::reacter::Reacter, narrow::swept::{Body, BodySweepData}};
+use crate::{Aabb, Intersect, broad::reacter::Reacter, narrow::swept::{Body, BodySweepData}};
+use std::{collections::{HashMap, HashSet}, fmt::Debug, hash::BuildHasherDefault, mem::ManuallyDrop};
 use fnv::{FnvBuildHasher, FnvHashMap, FnvHashSet, FnvHasher};
 use indexmap::IndexMap;
-use cgmath::ElementWise;
+use cgmath::{ElementWise, Vector2};
 
 
 union ColliderTypeUnion {
@@ -103,14 +101,14 @@ impl Collider {
    }
 }
 
-pub struct Plane { // todo: document
+pub struct Plane {
    id_counter: usize,
    table: FnvHashMap<usize, Collider>,
    adds: Option<usize>, // id of first of add candidates
    rems: FnvHashSet<usize>, // ids of all removal candidates
 
-   pub require_recalc: bool,
-   pub require_resort: bool,
+   require_recalc: bool,
+   require_resort: bool,
 
    // the x axis is chosen to be the discrimination axis due to (handling a row of columns most efficiently): 
    //    1. it is the most 'primitave' axis
@@ -134,70 +132,113 @@ impl Plane {
    }
 
    #[inline]
+   pub unsafe fn supress_recalc(&mut self) {
+      //! Unflags the broadphase for requiring recalculation.
+      //! Doing so while having modified any collider's velocity, position, or shapes may lead to unexpected/undefined 
+      //! behaviour when the broadphase is invoked/updated.
+      self.require_recalc = false;
+   }
+   #[inline]
+   pub unsafe fn supress_resort(&mut self) {
+      //! Unflags the broadphase for requiring re-sorting.
+      //! Doing so while having modified any collider's velocity, position, or shapes beyond an arbitrary threshhold 
+      //! may lead to unexpected/undefined behaviour when the broadphase is invoked/updated.
+      self.require_recalc = false;
+   }
+
+   #[inline]
    pub fn get_collider(&self, id: usize) -> &Collider {
       self.table.get(&id).expect("No Collider of this Id exists.")
    }
    #[inline]
    pub fn get_collider_mut(&mut self, id: usize) -> &mut Collider {
+      //! Flags broadphase as requiring recalculation. 
+      self.require_recalc = true;
+      self.table.get_mut(&id).expect("No Collider of this Id exists.")
+   }
+   #[inline]
+   pub unsafe fn get_collider_mut_silent(&mut self, id: usize) -> &mut Collider {
+      //! This version does not flag the broadphase as requiring recalculation. 
+      //! However, modifying the collider's velocity, position, or shapes may lead to unexpected/undefined behaviour when the broadphase is invoked.
       self.table.get_mut(&id).expect("No Collider of this Id exists.")
    }
 
    pub fn add_collider(&mut self, c: Collider) -> usize {
+      //! Queues a collider for incorporation into the broadphase.
       self.id_counter += 1;
       self.table.insert(self.id_counter, c);
       if self.adds.is_none() {
          self.adds = Some(self.id_counter);
       }
-      self.require_recalc = true;
       self.id_counter
    }
    pub fn remove_collider(&mut self, id: usize) {
+      //! Queues a collider for removal from the broadphase.
       self.table.remove(&id);
       self.rems.insert(id);
-      self.require_recalc = true;
    }
 
+   pub fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>, callback: &dyn Fn(usize, &Collider, f64) -> bool) {
+      //! Invokes the callback for each Collider the aabb intersects with until no more intersections or the callback `(id, collider, coeff a->b)` returns false. <br>
+      //! Requires that the broadphase be unflagged for recalculation and re-sorting.
+      assert_eq!(self.require_recalc || self.require_resort, false, "Ensure b & e values have been recalculated and re-sorted.");
 
-   pub fn get_be_list_indecies(&self, id: usize, minx: f64, maxx: f64) -> (usize, usize) {
-      //! Binary searches be_list for the b & e values belonging to the id provided. 
-      //! Returns indecies of `(b, e)`, or `(usize::MAX, usize::MAX)` if minx and maxx aren't found. <br>
-      //! Ensure be_list is sorted.
-      let len = self.be_list.len();
-      let mut b = usize::MAX;
-      for i in self.get_be_list_leftmost(minx)..len {
-         if self.be_list[i].1 == id {
-            b = i;
-            break;
-         }
-      }
-      let mut e = usize::MAX;
-      for i in self.get_be_list_leftmost(maxx)..len {
-         if self.be_list[i].1 == id {
-            e = i;
-            break;
-         }
-      }
-      (b, e)
-   }
-   pub fn get_be_list_leftmost(&self, x: f64) -> usize {
-      //! Binary searches be_list for the leftmost valid position for x. <br>
-      //! Ensure be_list is sorted.
-      let mut lo = 0;
-      let mut hi = self.be_list.len();
-      while lo < hi {
-         let half = (lo + hi) / 2;
-         if self.be_list[half].2 < x {
-            lo = half + 1;
+      let aabb = Aabb::new_safe(a.x, a.y, b.x, b.y);
+      let mut active = HashSet::with_hasher(FnvBuildHasher::default());
+      for val in self.be_list.iter() {
+         if val.2 < aabb.min.x {
+            match val.0 {
+               false => { let _ = active.insert(val.1); },
+               true => { let _ = active.remove(&val.1); },
+            }
+         } else if val.2 > aabb.max.x {
+            active.insert(val.1);
          } else {
-            hi = half;
+            break;
          }
       }
-      lo 
-   }
 
+      for id in active {
+         let c = self.get_collider(id);
+         if c.body.aabb.aabb_test(&aabb) {
+            if let Some(r) = c.body.line_query(a, b) {
+               if !callback(id, c, r) {
+                  break;
+               }
+            }
+         }
+      }
+   }
+   pub fn aabb_query(&self, aabb: Aabb, callback: &dyn Fn(usize, &Collider) -> bool) {
+      //! Invokes the callback for each Collider the aabb intersects with until no more intersections or the callback `(id, collider)` returns false. <br> 
+      //! Requires that the broadphase be unflagged for recalculation and resorting.
+      assert_eq!(self.require_recalc || self.require_resort, false, "Ensure b & e values have been recalculated and re-sorted.");
+
+      let mut active = HashSet::with_hasher(FnvBuildHasher::default());
+      for val in self.be_list.iter() {
+         if val.2 < aabb.min.x {
+            match val.0 {
+               false => { let _ = active.insert(val.1); },
+               true => { let _ = active.remove(&val.1); },
+            }
+         } else if val.2 > aabb.max.x {
+            active.insert(val.1);
+         } else {
+            break;
+         }
+      }
+
+      for id in active {
+         let c = self.get_collider(id);
+         if c.body.aabb.aabb_test(&aabb) && !callback(id, c) {
+            return
+         }
+      }
+   }
 
    pub fn recalc_be_vals(&mut self) {
-      //! Updates be_list's b & e values. Update `Body`s prior. Does not process adds and removals; use incorporate() instead for that.
+      //! Update `Body`s prior. Does not process Collider adds and removals; use `self.incorporate(..)` instead. <br>
+      //! Flags the broadphase for requiring re-sorting. Unflags the broadphase for requiring recalculation.
       for v in self.be_list.iter_mut() {
          if let Some(c) = self.table.get(&v.1) {
             match v.0 {
@@ -209,10 +250,10 @@ impl Plane {
       self.require_recalc = false;
       self.require_resort = true;
    }
-
    pub fn sort_be_vals(&mut self) {
-      // todo: should sorting unupdated be allowed?
-      assert_eq!(self.require_recalc, true, "self.be_list may be out of date. Set is_be_updated to true if you are sure be_list is sorted.");
+      //! Ensure broadphase is not flagged for recalculation. <br> 
+      //! Unflags the broadphase for requiring resorting.
+      assert_eq!(self.require_recalc, false, "Broadphase is flagged for requiring recalculation, cannot sort out-of-date data.");
 
       // sort b & e values
       // insertion sort due to its adaptivity & efficiency: sort is expected to be mostly sorted due to temporal cohesion
@@ -220,9 +261,9 @@ impl Plane {
       insertion_be(&mut self.be_list, 0, len - 1);
       self.require_resort = false;
    }
-
    pub fn update(&mut self) {
-      //! Merges/Culls Collider additions and removals for be_list if/as necessary. Recalculates and re-sorts b & e values if necessary.
+      //! Merges additions and culls removals from the braodphase. <br> 
+      //! Recalculates and re-sorts broadphase first, if flagged as required.
 
       // Ensure be_list merges validly
       if self.require_recalc { self.recalc_be_vals(); }
@@ -300,9 +341,9 @@ impl Plane {
          self.be_list[j] = (old_val.0, old_val.1, x);
       }
    }
-
    pub fn sweep_and_prune(&mut self, t: f64, epsilon: f64) {
-      //! Performs a [sweep and prune](https://en.wikipedia.org/wiki/Sweep_and_prune) broadphase algorithm implementation.
+      //! Performs a [sweep and prune](https://en.wikipedia.org/wiki/Sweep_and_prune) broadphase algorithm implementation. <br> 
+      //! Requires that Collider adds/removals be processed and broadphase not be flagged for recalculation and re-sorting.
 
       assert_eq!(self.require_recalc || self.require_resort || self.adds.is_some() || !self.rems.is_empty(), false,
          "Update this Plane's state before invoking sweep_and_prune(..). For instance, use self.update().");
@@ -481,6 +522,45 @@ impl Plane {
       self.require_recalc = false;
       self.require_resort = false;
    }
+
+/* pub fn get_be_list_indecies(&self, id: usize, minx: f64, maxx: f64) -> (usize, usize) {
+      //! Binary searches be_list for the b & e values belonging to the id provided. 
+      //! Returns indecies of `(b, e)`, or `(usize::MAX, usize::MAX)` if minx and maxx aren't found. <br>
+      //! Ensure be_list is sorted.
+      let len = self.be_list.len();
+      let mut b = usize::MAX;
+      for i in self.get_be_list_leftmost(minx)..len {
+         if self.be_list[i].1 == id {
+            b = i;
+            break;
+         }
+      }
+      let mut e = usize::MAX;
+      for i in self.get_be_list_leftmost(maxx)..len {
+         if self.be_list[i].1 == id {
+            e = i;
+            break;
+         }
+      }
+      (b, e)
+   }
+   pub fn get_be_list_leftmost(&self, x: f64) -> usize {
+      //! Binary searches be_list for the leftmost valid position for x. <br>
+      //! Ensure be_list is sorted.
+      let mut lo = 0;
+      let mut hi = self.be_list.len();
+      while lo < hi {
+         let half = (lo + hi) / 2;
+         if self.be_list[half].2 < x {
+            lo = half + 1;
+         } else {
+            hi = half;
+         }
+      }
+      lo 
+   }
+
+*/
 }
 
 

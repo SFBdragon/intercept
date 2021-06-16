@@ -60,7 +60,7 @@ impl Collider {
         let broad = body.get_broad();
         Collider {
             body,
-            trigger: Box::new(|_, _, _, _, _| -> () {}),
+            trigger: Box::new(|_, _, _, _, _| {}),
 
             is_static: false,
             ctu: ColliderTypeUnion {
@@ -94,7 +94,7 @@ impl Collider {
         let broad = body.get_broad();
         Collider {
             body,
-            trigger: Box::new(|_, _, _, _, _| -> () {}),
+            trigger: Box::new(|_, _, _, _, _| {}),
 
             is_static: false,
             ctu: ColliderTypeUnion { stat: knock },
@@ -122,6 +122,7 @@ impl Collider {
     }
 }
 
+#[derive(Debug)]
 pub struct Plane {
     id_counter: usize,
     table: FnvHashMap<usize, Collider>,
@@ -139,6 +140,11 @@ pub struct Plane {
     be_list: Vec<(bool, usize, f64)>,
 }
 
+impl Default for Plane {
+    fn default() -> Self {
+        Plane::new()
+    }
+}
 impl Plane {
     pub fn new() -> Plane {
         Plane {
@@ -155,15 +161,17 @@ impl Plane {
     #[inline]
     pub unsafe fn supress_recalc(&mut self) {
         //! Unflags the broadphase for requiring recalculation.
-        //! Doing so while having modified any collider's velocity, position, or shapes may lead to unexpected/undefined
-        //! behaviour when the broadphase is invoked/updated.
+        //! # Safety
+        //! Doing so while having mutated any collider's velocity, position, or shapes may lead to unexpected/incorrect
+        //! behaviour when the broadphase is invoked/updated. Do so only when no such mutations have occured.
         self.require_recalc = false;
     }
     #[inline]
     pub unsafe fn supress_resort(&mut self) {
         //! Unflags the broadphase for requiring re-sorting.
-        //! Doing so while having modified any collider's velocity, position, or shapes beyond an arbitrary threshhold
-        //! may lead to unexpected/undefined behaviour when the broadphase is invoked/updated.
+        //! # Safety
+        //! Doing so while having mutated any collider's velocity, position, or shapes beyond an arbitrary threshhold
+        //! may lead to unexpected/incorrect behaviour when the broadphase is invoked/updated. Do so only when no such mutations have occured.
         self.require_recalc = false;
     }
 
@@ -182,7 +190,8 @@ impl Plane {
     #[inline]
     pub unsafe fn get_collider_mut_silent(&mut self, id: usize) -> &mut Collider {
         //! This version does not flag the broadphase as requiring recalculation.
-        //! However, modifying the collider's velocity, position, or shapes may lead to unexpected/undefined behaviour when the broadphase is invoked.
+        //! # Safety
+        //! Do not mutate the collider's velocity, position, or shapes, else unexpected/incorrect behaviour when the broadphase is invoked may occur.
         self.table
             .get_mut(&id)
             .expect("No Collider of this Id exists.")
@@ -211,11 +220,7 @@ impl Plane {
     ) {
         //! Invokes the callback for each Collider the aabb intersects with until no more intersections or the callback `(id, collider, coeff a->b)` returns false. <br>
         //! Requires that the broadphase be unflagged for recalculation and re-sorting.
-        assert_eq!(
-            self.require_recalc || self.require_resort,
-            false,
-            "Ensure b & e values have been recalculated and re-sorted."
-        );
+        assert!(!self.require_recalc && !self.require_resort, "Ensure b & e values have been recalculated and re-sorted.");
 
         let aabb = Aabb::new_safe(a.x, a.y, b.x, b.y);
         let mut active = HashSet::with_hasher(FnvBuildHasher::default());
@@ -250,11 +255,7 @@ impl Plane {
     pub fn aabb_query(&self, aabb: Aabb, callback: &dyn Fn(usize, &Collider) -> bool) {
         //! Invokes the callback for each Collider the aabb intersects with until no more intersections or the callback `(id, collider)` returns false. <br>
         //! Requires that the broadphase be unflagged for recalculation and resorting.
-        assert_eq!(
-            self.require_recalc || self.require_resort,
-            false,
-            "Ensure b & e values have been recalculated and re-sorted."
-        );
+        assert!(!self.require_recalc && !self.require_resort, "Ensure b & e values have been recalculated and re-sorted.");
 
         let mut active = HashSet::with_hasher(FnvBuildHasher::default());
         for val in self.be_list.iter() {
@@ -299,10 +300,7 @@ impl Plane {
     pub fn sort_be_vals(&mut self) {
         //! Ensure broadphase is not flagged for recalculation. <br>
         //! Unflags the broadphase for requiring resorting.
-        assert_eq!(
-            self.require_recalc, false,
-            "Broadphase is flagged for requiring recalculation, cannot sort out-of-date data."
-        );
+        assert!(!self.require_recalc, "Broadphase is flagged for requiring recalculation, cannot sort out-of-date data.");
 
         // sort b & e values
         // insertion sort due to its adaptivity & efficiency: sort is expected to be mostly sorted due to temporal cohesion
@@ -356,42 +354,39 @@ impl Plane {
             let mut new_be_list =
                 Vec::with_capacity(self.be_list.len() + add_len - self.rems.len());
             let mut old_index = 0;
-            if self.rems.len() > 0 {
+            let mut add_index = 0;
+            if !self.rems.is_empty() {
                 // If removals as well as additions must be accounted for.
-                let mut add_index = 0;
                 for _ in 0..new_be_list.len() {
                     if self.be_list[old_index].2 > add[add_index].2 {
                         new_be_list.push(add[add_index]);
-                        add_index = add_index + 1;
+                        add_index += 1;
                     } else {
                         if !self.rems.contains(&self.be_list[old_index].1) {
                             new_be_list.push(self.be_list[old_index]);
                         }
-                        old_index = old_index + 1;
+                        old_index += 1;
                     }
                 }
             } else {
                 // If only additions must be accounted for.
-                let mut add_index = 0;
                 for _ in 0..new_be_list.len() {
                     if self.be_list[old_index].2 > add[add_index].2 {
                         new_be_list.push(add[add_index]);
-                        add_index = add_index + 1;
+                        add_index += 1;
                     } else {
                         new_be_list.push(self.be_list[old_index]);
-                        old_index = old_index + 1;
+                        old_index += 1;
                     }
                 }
             }
-        } else if self.rems.len() > 0 {
+        } else if !self.rems.is_empty() {
             // If only removals are in order. Else, no action required.
             let mut new_be_list = Vec::with_capacity(self.be_list.len() - self.rems.len());
-            let mut old_index = 0;
-            for _ in 0..new_be_list.len() {
-                if !self.rems.contains(&self.be_list[old_index].1) {
-                    new_be_list.push(self.be_list[old_index]);
+            for be_val in self.be_list.iter() {
+                if !self.rems.contains(&be_val.1) {
+                    new_be_list.push(*be_val);
                 }
-                old_index = old_index + 1;
             }
             self.be_list = new_be_list;
         }
@@ -402,28 +397,26 @@ impl Plane {
 
     fn reposition_val(&mut self, index: usize, x: f64) {
         let old_val = self.be_list[index];
+        let mut j = index;
         if x > old_val.2 {
-            let mut j = index;
             while j <= self.be_list.len() && self.be_list[j + 1].2 < x {
                 self.be_list[j] = self.be_list[j + 1];
-                j = j + 1;
+                j += 1;
             }
-            self.be_list[j] = (old_val.0, old_val.1, x);
         } else {
-            let mut j = index;
             while j > 0 && self.be_list[j - 1].2 > x {
                 self.be_list[j] = self.be_list[j - 1];
-                j = j - 1;
+                j -= 1;
             }
-            self.be_list[j] = (old_val.0, old_val.1, x);
         }
+        self.be_list[j] = (old_val.0, old_val.1, x);
     }
     pub fn sweep_and_prune(&mut self, t: f64, epsilon: f64) {
         //! Performs a [sweep and prune](https://en.wikipedia.org/wiki/Sweep_and_prune) broadphase algorithm implementation. <br>
         //! Requires that Collider adds/removals be processed and broadphase not be flagged for recalculation and re-sorting.
 
-        assert_eq!(self.require_recalc || self.require_resort || self.adds.is_some() || !self.rems.is_empty(), false,
-         "Update this Plane's state before invoking sweep_and_prune(..). For instance, use self.update().");
+        assert!(!self.require_recalc && !self.require_resort && self.adds.is_none() && self.rems.is_empty(), 
+            "Update this Plane's state before invoking sweep_and_prune(..). For instance, use self.update().");
 
         let mut active = IndexMap::with_hasher(FnvBuildHasher::default()); // id, b be index
         let mut candidates = HashMap::with_hasher(FnvBuildHasher::default()); // id, (other id, other be b, bsd)
@@ -531,7 +524,7 @@ impl Plane {
             }
         }
 
-        while to_sort.len() != 0 {
+        while !to_sort.is_empty() {
             // Resort the collided objects
             for (_, (indecies, broad_x)) in to_sort.iter() {
                 self.reposition_val(indecies.0, broad_x.0);
@@ -628,7 +621,7 @@ impl Plane {
                                             if bsd.travel - c1c2_rem_diff < data.travel {
                                                 was_candidate = false;
                                                 data = bsd;
-                                                data.travel = data.travel - c1c2_rem_diff;
+                                                data.travel -= c1c2_rem_diff;
                                                 id2 = *v2_id;
                                                 val2_be_b = *v2_be_b;
                                                 rem_diff = c1c2_rem_diff;
@@ -664,7 +657,7 @@ impl Plane {
                             if !c2_is_static {
                                 (c1.trigger)(id1, id2, data.travel * t, data, epsilon);
                             } else if c1.is_static {
-                                c1.remainder = c1.remainder - data.travel;
+                                c1.remainder -= data.travel;
                                 c1.body.translate(
                                     c1.body.vel.mul_element_wise(t * data.travel)
                                         + data.norm.mul_element_wise(epsilon),
@@ -683,7 +676,7 @@ impl Plane {
 
                             if !was_candidate {
                                 // Only insert if the Collider has yet to be processed.
-                                data.travel = data.travel + rem_diff;
+                                data.travel += rem_diff;
                                 candidates.insert(id2, (id1, val2_be_b, data.invert()));
                             }
                         }
@@ -752,7 +745,7 @@ fn insertion_be(a: &mut Vec<(bool, usize, f64)>, lo: usize, hi: usize) {
         let mut j = i;
         while j != 0 && a[j - 1].2 > val.2 {
             a[j] = a[j - 1];
-            j = j - 1;
+            j -= 1;
         }
         a[j] = val;
     }

@@ -12,9 +12,9 @@ use std::{
 #[inline]
 pub fn colinearity_test(a: Vector2<f64>, b: Vector2<f64>, c: Vector2<f64>) -> bool {
     //! Returns whether all three points are colinear.
-    let v = a - b;
-    let w = b - c;
-    v.x * w.y - v.y * w.x == 0.0 && v.dot(w) > 0.0
+    let ba = a - b;
+    let cb = b - c;
+    ba.perp_dot(cb) == 0.0 && ba.dot(cb) > 0.0
 }
 #[inline]
 pub fn point_normal_test(loc: Vector2<f64>, a: Vector2<f64>, normal: Vector2<f64>) -> bool {
@@ -23,12 +23,7 @@ pub fn point_normal_test(loc: Vector2<f64>, a: Vector2<f64>, normal: Vector2<f64
 }
 
 #[inline]
-pub fn seg_seg_test(
-    a1: Vector2<f64>,
-    a2: Vector2<f64>,
-    b1: Vector2<f64>,
-    b2: Vector2<f64>,
-) -> bool {
+pub fn seg_seg_test(a1: Vector2<f64>, a2: Vector2<f64>, b1: Vector2<f64>, b2: Vector2<f64>) -> bool {
     //! Returns whether a line segment-line segment intersection occurs.
     let da = a2 - a1;
     let db = b2 - b1;
@@ -48,12 +43,7 @@ pub fn seg_seg_test(
     udd >= 0.0 && udd <= dd && tdd >= 0.0 && tdd <= dd
 }
 #[inline]
-pub fn seg_seg_query(
-    a1: Vector2<f64>,
-    a2: Vector2<f64>,
-    b1: Vector2<f64>,
-    b2: Vector2<f64>,
-) -> Option<f64> {
+pub fn seg_seg_query(a1: Vector2<f64>, a2: Vector2<f64>, b1: Vector2<f64>, b2: Vector2<f64>) -> Option<f64> {
     //! Returns the coefficient distance along line segment `a` an intersection occurs.
     let da = a2 - a1;
     let db = b2 - b1;
@@ -78,12 +68,7 @@ pub fn seg_seg_query(
     Some(tdd / dd)
 }
 #[inline]
-pub fn line_seg_query(
-    o: Vector2<f64>,
-    n: Vector2<f64>,
-    b1: Vector2<f64>,
-    b2: Vector2<f64>,
-) -> Option<f64> {
+pub fn line_seg_query(o: Vector2<f64>, n: Vector2<f64>, b1: Vector2<f64>, b2: Vector2<f64>) -> Option<f64> {
     //! Returns the distance along line from `o` an intersection occurs.
     let db = b2 - b1;
 
@@ -101,12 +86,7 @@ pub fn line_seg_query(
     Some((db.x * nd1.y - db.y * nd1.x) / dot)
 }
 #[inline]
-pub fn seg_line_query(
-    a1: Vector2<f64>,
-    a2: Vector2<f64>,
-    o: Vector2<f64>,
-    n: Vector2<f64>,
-) -> Option<f64> {
+pub fn seg_line_query(a1: Vector2<f64>, a2: Vector2<f64>, o: Vector2<f64>, n: Vector2<f64>) -> Option<f64> {
     //! Returns the coefficient distance along line segment `a` an intersection occurs.
     let da = a2 - a1;
     let dot = da.x * n.y - n.x * da.y;
@@ -123,17 +103,12 @@ pub fn seg_line_query(
     }
 }
 #[inline]
-pub fn line_line_query(
-    o1: Vector2<f64>,
-    n1: Vector2<f64>,
-    o2: Vector2<f64>,
-    n2: Vector2<f64>,
-) -> Option<f64> {
+pub fn line_line_query(o1: Vector2<f64>, n1: Vector2<f64>, o2: Vector2<f64>, n2: Vector2<f64>) -> Option<f64> {
     //! Returns the distance along line `1` from `o1` an intersection occurs.
     let dot = n1.x * n2.y - n2.x * n1.y;
-    if dot == 0.0 {
+    if dot == 0.0 { // guard against colinearity
         return None;
-    } // guard against colinearity
+    }
     Some((n2.x * (o1.y - o2.y) - n2.y * (o1.x - o2.x)) / dot)
 }
 
@@ -176,8 +151,8 @@ pub struct Aabb {
 impl Aabb {
     #[inline]
     pub fn new(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Aabb {
-        assert_eq!(minx < maxx, true);
-        assert_eq!(miny < maxy, true);
+        assert!(minx < maxx);
+        assert!(miny < maxy);
 
         Aabb {
             min: cgmath::vec2(minx, miny),
@@ -248,10 +223,10 @@ impl Poly {
         let mut index = 0;
 
         let mut topmost_y = f64::MIN;
-        for i in 0..len {
-            if verts[i].y > topmost_y {
+        for (i, v) in verts.iter().enumerate() {
+            if v.y > topmost_y {
                 index = i;
-                topmost_y = verts[i].y;
+                topmost_y = v.y;
             }
         }
 
@@ -273,9 +248,7 @@ impl Poly {
                 }
             }
             a = verts[order[index]] - vert;
-            let t = order[v + 1];
-            order[v + 1] = order[index];
-            order[index] = t;
+            order.swap(v + 1, index);
         }
 
         let mut ordered_and_duped = Vec::with_capacity(len + 1);
@@ -321,7 +294,7 @@ impl Poly {
     pub fn translate(mut self, offset: Vector2<f64>) -> Poly {
         self.aabb = self.aabb.translate(offset);
         for i in 0..self.verts.len() {
-            self.verts[i] = self.verts[i] + offset;
+            self.verts[i] += offset;
         }
         self
     }
@@ -407,7 +380,7 @@ fn poly_circle_test(poly: &Poly, circle: &Circle) -> bool {
             if dot <= circle.rad {
                 // if extended axis encompases center
                 let x = (poly.verts[i + 1] - v).dot(vc) as f64;
-                if 0.0 <= x && x <= 1.0 {
+                if x >= 0.0 && x <= 1.0 {
                     return true; // circle definitely touches line
                 } else {
                     continue;
@@ -473,11 +446,11 @@ impl Intersect for Circle {
         let unit = ab.mul_element_wise(inv_size); // normalization
 
         let dot = unit.dot(diff) as f64;
-        let x = self.rad * self.rad + dot * dot - diff.magnitude2() as f64;
-        if x > 0.0 {
-            let d = -(dot + x.sqrt()) * inv_size;
-            if d >= 0.0 && d <= 1.0 {
-                return Some(d);
+        let rad_discr = self.rad * self.rad + dot * dot - diff.magnitude2() as f64;
+        if rad_discr > 0.0 {
+            let dist = -(dot + rad_discr.sqrt()) * inv_size;
+            if dist >= 0.0 && dist <= 1.0 {
+                return Some(dist);
             }
         }
         None
@@ -519,9 +492,8 @@ impl Intersect for Aabb {
         let abs_hd_x = f64::abs(halfab.x);
         let abs_hd_y = f64::abs(halfab.y);
         !(f64::abs(halfdiff.x) > halfaabb.x + abs_hd_x
-            || f64::abs(halfdiff.y) > halfaabb.y + abs_hd_y
-            || f64::abs(halfab.x * halfdiff.y - halfab.y * halfdiff.x)
-                > halfaabb.x * abs_hd_y + halfaabb.y * abs_hd_x + 0.00001)
+        || f64::abs(halfdiff.y) > halfaabb.y + abs_hd_y
+        || f64::abs(halfab.x * halfdiff.y - halfab.y * halfdiff.x) > halfaabb.x * abs_hd_y + halfaabb.y * abs_hd_x + 0.00001)
     }
     fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<f64> {
         //! Returns the coefficient distance along line segment `a->b` an intersection occurs.
@@ -735,27 +707,33 @@ impl Shape {
         self.id
     }
     pub unsafe fn expect_circle(&self) -> &Circle {
-        //! Match/Index against `get_id` to ensure safety.
+        //! # Safety 
+        //! Match/Index against `get_id` to ensure safety, or use 'get' variant.
         &self.shape.circle
     }
     pub unsafe fn expect_aabb(&self) -> &Aabb {
-        //! Match/Index against `get_id` to ensure safety.
+        //! # Safety 
+        //! Match/Index against `get_id` to ensure safety, or use 'get' variant.
         &self.shape.aabb
     }
     pub unsafe fn expect_poly(&self) -> &Poly {
-        //! Match/Index against `get_id` to ensure safety.
+        //! # Safety 
+        //! Match/Index against `get_id` to ensure safety, or use 'get' variant.
         &self.shape.poly
     }
     pub unsafe fn expect_circle_mut(&mut self) -> &mut Circle {
-        //! Match/Index against `get_id` to ensure safety.
+        //! # Safety 
+        //! Match/Index against `get_id` to ensure safety, or use 'get' variant.
         &mut self.shape.circle
     }
     pub unsafe fn expect_aabb_mut(&mut self) -> &mut Aabb {
-        //! Match/Index against `get_id` to ensure safety.
+        //! # Safety 
+        //! Match/Index against `get_id` to ensure safety, or use 'get' variant.
         &mut self.shape.aabb
     }
     pub unsafe fn expect_poly_mut(&mut self) -> &mut Poly {
-        //! Match/Index against `get_id` to ensure safety.
+        //! # Safety 
+        //! Match/Index against `get_id` to ensure safety, or use 'get' variant.
         &mut self.shape.poly
     }
 
@@ -890,7 +868,7 @@ impl Drop for Shape {
 }
 impl Clone for Shape {
     fn clone(&self) -> Shape {
-        shape_match!(&self => {
+        shape_match!(self => {
            Circle(c) => Shape { id: Shape::CIRCLE_ID, shape: ShapeUnion { circle: *c } },
            Aabb(a) => Shape { id: Shape::AABB_ID, shape: ShapeUnion { aabb: *a } },
            Poly(p) => Shape { id: Shape::POLY_ID, shape: ShapeUnion { poly: ManuallyDrop::new(p.clone()) } }
@@ -910,7 +888,7 @@ impl Debug for Shape {
 }
 impl Intersect for Shape {
     fn get_bounding_box(&self) -> Aabb {
-        shape_match!(&self => {
+        shape_match!(self => {
            Circle(c) => c.get_bounding_box(),
            Aabb(a) => *a,
            Poly(p) => p.aabb
@@ -918,7 +896,7 @@ impl Intersect for Shape {
     }
 
     fn point_test(&self, loc: Vector2<f64>) -> bool {
-        shape_match!(&self => {
+        shape_match!(self => {
            Circle(c) => c.point_test(loc),
            Aabb(a) => a.point_test(loc),
            Poly(p) => p.point_test(loc)
@@ -926,7 +904,7 @@ impl Intersect for Shape {
     }
     fn line_test(&self, a: Vector2<f64>, b: Vector2<f64>) -> bool {
         //! Returns whether a line-shape intersection occurs.
-        shape_match!(&self => {
+        shape_match!(self => {
            Circle(c) => c.line_test(a, b),
            Aabb(aabb) => aabb.line_test(a, b),
            Poly(p) => p.line_test(a, b)
@@ -934,7 +912,7 @@ impl Intersect for Shape {
     }
     fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<f64> {
         //! Returns the coefficient distance along line segment `a->b` an intersection occurs.
-        shape_match!(&self => {
+        shape_match!(self => {
            Circle(c) => c.line_query(a, b),
            Aabb(aabb) => aabb.line_query(a, b),
            Poly(p) => p.line_query(a, b)
@@ -942,21 +920,21 @@ impl Intersect for Shape {
     }
 
     fn circle_test(&self, circle: &Circle) -> bool {
-        shape_match!(&self => {
+        shape_match!(self => {
            Circle(c) => c.circle_test(circle),
            Aabb(a) => a.circle_test(circle),
            Poly(p) => p.circle_test(circle)
         })
     }
     fn aabb_test(&self, aabb: &Aabb) -> bool {
-        shape_match!(&self => {
+        shape_match!(self => {
            Circle(c) => c.aabb_test(aabb),
            Aabb(a) => a.aabb_test(aabb),
            Poly(p) => p.aabb_test(aabb)
         })
     }
     fn poly_test(&self, poly: &Poly) -> bool {
-        shape_match!(&self => {
+        shape_match!(self => {
            Circle(c) => c.poly_test(poly),
            Aabb(a) => a.poly_test(poly),
            Poly(p) => p.poly_test(poly)
@@ -971,47 +949,22 @@ mod tests {
 
     #[test]
     fn line_seg_test() {
-        assert_eq!(
-            seg_seg_query(
-                vec2(0.0, 0.0),
-                vec2(3.0, 1.0),
-                vec2(2.0, 1.0),
-                vec2(2.0, -4.0)
-            ),
-            Some(2.0 / 3.0)
-        );
-        assert_eq!(
-            seg_seg_query(
-                vec2(3.0, 1.0),
-                vec2(0.0, 0.0),
-                vec2(2.0, 1.0),
-                vec2(2.0, -4.0)
-            ),
-            Some(1.0 / 3.0)
-        );
+        assert_eq!(seg_seg_query(vec2(0.0, 0.0), vec2(3.0, 1.0), vec2(2.0, 1.0), vec2(2.0, -4.0)), Some(2.0 / 3.0));
+        assert_eq!(seg_seg_query(vec2(3.0, 1.0), vec2(0.0, 0.0), vec2(2.0, 1.0), vec2(2.0, -4.0)), Some(1.0 / 3.0));
     }
 
     #[test]
     fn circle_seg_test() {
         let c = Circle::new(0.5, 0.5, 0.5);
 
-        assert_eq!(
-            c.line_query(vec2(0.0, 1.0), vec2(3.0, 1.0)).is_some(),
-            false
-        );
-        assert_eq!(
-            c.line_query(vec2(3.0, 1.0), vec2(0.0, 1.0)).is_some(),
-            false
-        );
-        assert_eq!(
-            c.line_query(vec2(0.0, 0.0), vec2(-1.0, -1.0)).is_some(),
-            false
-        );
+        assert!(c.line_query(vec2(0.0, 1.0), vec2(3.0, 1.0)).is_none());
+        assert!(c.line_query(vec2(3.0, 1.0), vec2(0.0, 1.0)).is_none());
+        assert!(c.line_query(vec2(0.0, 0.0), vec2(-1.0, -1.0)).is_none());
 
         assert_eq!(c.line_query(vec2(-1.0, 0.5), vec2(3.0, 0.5)), Some(0.25));
-        assert_eq!(c.line_query(vec2(0.0, 0.0), vec2(3.0, 1.0)).is_some(), true);
-        assert_eq!(c.line_query(vec2(3.0, 1.0), vec2(0.0, 0.0)).is_some(), true);
-        assert_eq!(c.line_query(vec2(0.0, 0.9), vec2(3.0, 1.0)).is_some(), true);
+        assert!(c.line_query(vec2(0.0, 0.0), vec2(3.0, 1.0)).is_some());
+        assert!(c.line_query(vec2(3.0, 1.0), vec2(0.0, 0.0)).is_some());
+        assert!(c.line_query(vec2(0.0, 0.9), vec2(3.0, 1.0)).is_some());
     }
 
     #[test]
@@ -1033,12 +986,12 @@ mod tests {
         ])
         .translate(vec2(0.8, 0.8));
 
-        assert_eq!(p1.poly_test(&p2), true);
+        assert!(p1.poly_test(&p2));
 
         let p1 = p1.translate(vec2(0.5, 0.5));
         let p2 = p2.translate(vec2(0.8, 0.8));
 
-        assert_eq!(p1.poly_test(&p2), false);
+        assert!(!p1.poly_test(&p2));
 
         // poly swept sat confirmation
         let p1 = Poly::new(&[
@@ -1060,6 +1013,6 @@ mod tests {
         .translate(vec2(2.0, 1.0))
         .translate(vec2(0.1, -0.2));
 
-        assert_eq!(p1.poly_test(&p2), false);
+        assert!(!p1.poly_test(&p2));
     }
 }

@@ -4,14 +4,7 @@ use crate::BodySweepData;
 
 pub trait Reacter {
     /// Return the velocity to resume after a collision.
-    fn react(
-        &mut self,
-        vel: Vector2<f64>,
-        self_id: usize,
-        other_id: usize,
-        data: BodySweepData,
-        epsilon: f64,
-    ) -> Vector2<f64>;
+    fn react(&mut self, vel: Vector2<f64>, self_id: usize, other_id: usize, data: BodySweepData, epsilon: f64) -> Vector2<f64>;
 }
 
 /// React by maintaining a coefficient of the previous velocity, phasing through static colliders.
@@ -20,14 +13,7 @@ pub struct PhaseReacter {
     coefficient: f64,
 }
 impl Reacter for PhaseReacter {
-    fn react(
-        &mut self,
-        vel: Vector2<f64>,
-        _: usize,
-        _: usize,
-        _: BodySweepData,
-        _: f64,
-    ) -> Vector2<f64> {
+    fn react(&mut self, vel: Vector2<f64>, _: usize, _: usize, _: BodySweepData, _: f64) -> Vector2<f64> {
         vel.mul_element_wise(self.coefficient)
     }
 }
@@ -37,17 +23,9 @@ pub struct DeflectReacter {
     coefficient: f64,
 }
 impl Reacter for DeflectReacter {
-    fn react(
-        &mut self,
-        vel: Vector2<f64>,
-        _: usize,
-        _: usize,
-        data: BodySweepData,
-        _: f64,
-    ) -> Vector2<f64> {
+    fn react(&mut self, vel: Vector2<f64>, _: usize, _: usize, data: BodySweepData, _: f64) -> Vector2<f64> {
         // i = r by normal: r=d−2(d⋅n)n
-        (vel - data.norm.mul_element_wise(2.0 * vel.dot(data.norm)))
-            .mul_element_wise(self.coefficient)
+        (vel - data.norm.mul_element_wise(2.0 * vel.dot(data.norm))).mul_element_wise(self.coefficient)
     }
 }
 
@@ -57,14 +35,7 @@ pub struct SlideReacter {
     coefficient: f64,
 }
 impl Reacter for SlideReacter {
-    fn react(
-        &mut self,
-        vel: Vector2<f64>,
-        _: usize,
-        _: usize,
-        data: BodySweepData,
-        epsilon: f64,
-    ) -> Vector2<f64> {
+    fn react(&mut self, vel: Vector2<f64>, _: usize, _: usize, data: BodySweepData, epsilon: f64) -> Vector2<f64> {
         // check if the collision is instantanious, accounting for epsilon adjustment
         let is_instant = vel.mul_element_wise(data.travel).dot(data.norm) > epsilon * -2.0;
         // Update to current norm of constriction

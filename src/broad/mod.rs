@@ -1,10 +1,6 @@
 pub mod reacter;
 
-use crate::{
-    broad::reacter::Reacter,
-    narrow::swept::{Body, BodySweepData},
-    Aabb, Intersect,
-};
+use crate::{Aabb, Intersect, broad::reacter::Reacter, narrow::swept::{Body, BodySweepData}, swept::body_sweep};
 use cgmath::{ElementWise, Vector2};
 use fnv::{FnvBuildHasher, FnvHashMap, FnvHashSet, FnvHasher};
 use indexmap::IndexMap;
@@ -412,12 +408,11 @@ impl Plane {
         self.be_list[j] = (old_val.0, old_val.1, x);
     }
     pub fn sweep_and_prune(&mut self, t: f64, epsilon: f64) {
-        //! Performs a [sweep and prune](https://en.wikipedia.org/wiki/Sweep_and_prune) broadphase algorithm implementation. <br>
-        //! Requires that Collider adds/removals be processed and broadphase not be flagged for recalculation and re-sorting.
-
-        assert!(!self.require_recalc && !self.require_resort && self.adds.is_none() && self.rems.is_empty(), 
-            "Update this Plane's state before invoking sweep_and_prune(..). For instance, use self.update().");
-
+        //! Performs a [sweep and prune](https://en.wikipedia.org/wiki/Sweep_and_prune) broadphase algorithm implementation. 
+        if self.require_recalc || self.require_resort || self.adds.is_some() || !self.rems.is_empty() {
+            self.update();
+        }
+        
         let mut active = IndexMap::with_hasher(FnvBuildHasher::default()); // id, b be index
         let mut candidates = HashMap::with_hasher(FnvBuildHasher::default()); // id, (other id, other be b, bsd)
         let mut to_sort = IndexMap::with_hasher(FnvBuildHasher::default()); // id, (be val indecies, x belist pos's)
@@ -445,10 +440,7 @@ impl Plane {
                         if let Some(c) = candidates.remove(&id1) {
                             (true, c)
                         } else {
-                            (
-                                false,
-                                (usize::MAX, usize::MAX, BodySweepData::new_invalid()),
-                            )
+                            (false, (usize::MAX, usize::MAX, BodySweepData::new_invalid()))
                         };
 
                     // Find the closest collision, if any.
@@ -483,9 +475,7 @@ impl Plane {
                             .get(&id2)
                             .expect("Collider of id2 does not exist.");
                         let (c2_is_static, c2_vel_add) = if c2.is_static {
-                            (
-                                true,
-                                if unsafe { c2.ctu.stat } {
+                            (true, if unsafe { c2.ctu.stat } {
                                     c2.body.vel
                                 } else {
                                     cgmath::vec2(0.0, 0.0)
@@ -501,18 +491,14 @@ impl Plane {
                             (c1.trigger)(id1, id2, data.travel * t, data, epsilon);
                         } else if c1.is_static {
                             c1.remainder = 1.0 - data.travel; // c1.remainder == 1.0
-                            c1.body.translate(
-                                c1.body.vel.mul_element_wise(t * data.travel)
-                                    + data.norm.mul_element_wise(epsilon),
-                            );
+                            c1.body.translate(c1.body.vel.mul_element_wise(t * data.travel) + data.norm.mul_element_wise(epsilon));
                             let vel = unsafe {
                                 (*c1.ctu.reacter).react(c1.body.vel, id1, id2, data, epsilon)
                             };
                             c1.body.vel += vel + c2_vel_add;
                             let broad = c1.body.get_broad();
                             c1.broad_y = (broad.min.y, broad.max.y);
-                            to_sort
-                                .insert(id1, ((val1_be_b, be_index), (broad.min.y, broad.max.y)));
+                            to_sort.insert(id1, ((val1_be_b, be_index), (broad.min.y, broad.max.y)));
                         }
 
                         if !was_candidate {
@@ -537,8 +523,8 @@ impl Plane {
                 let id1 = val.1;
                 match val.0 {
                     false => {
-                        let _ = active.insert(id1, be_index);
-                    } // send b val to active
+                        let _ = active.insert(id1, be_index); // send b val to active
+                    }
                     true => {
                         let val1_be_b = active
                             .remove(&id1)
@@ -554,21 +540,14 @@ impl Plane {
                             if let Some(c) = candidates.remove(&id1) {
                                 (true, c)
                             } else {
-                                (
-                                    false,
-                                    (usize::MAX, usize::MAX, BodySweepData::new_invalid()),
-                                )
+                                (false, (usize::MAX, usize::MAX, BodySweepData::new_invalid()))
                             };
 
                         if !prev_sort && !was_candidate {
                             continue;
                         }
 
-                        let table_raw: *mut HashMap<
-                            usize,
-                            Collider,
-                            BuildHasherDefault<FnvHasher>,
-                        > = &mut self.table;
+                        let table_raw: *mut HashMap<usize, Collider, BuildHasherDefault<FnvHasher>> = &mut self.table;
                         // Retrieve the collider.
                         let c1 = unsafe {
                             (*table_raw)
@@ -596,11 +575,7 @@ impl Plane {
                                     if c1c2_rem_diff < 0.0 {
                                         let offset = c2.body.vel.mul_element_wise(c1c2_rem_diff);
                                         c2.body.translate(offset);
-                                        if let Some(bsd) = crate::narrow::swept::body_sweep(
-                                            &c1.body,
-                                            &c2.body,
-                                            t * c1.remainder,
-                                        ) {
+                                        if let Some(bsd) = body_sweep(&c1.body, &c2.body, t * c1.remainder) {
                                             if bsd.travel < data.travel {
                                                 was_candidate = false;
                                                 data = bsd;
@@ -613,11 +588,7 @@ impl Plane {
                                     } else {
                                         let offset = c1.body.vel.mul_element_wise(-c1c2_rem_diff);
                                         c1.body.translate(offset);
-                                        if let Some(bsd) = crate::narrow::swept::body_sweep(
-                                            &c1.body,
-                                            &c2.body,
-                                            t * c2.remainder,
-                                        ) {
+                                        if let Some(bsd) = body_sweep(&c1.body, &c2.body, t * c2.remainder) {
                                             if bsd.travel - c1c2_rem_diff < data.travel {
                                                 was_candidate = false;
                                                 data = bsd;
@@ -641,14 +612,11 @@ impl Plane {
                                 .get(&id2)
                                 .expect("Collider of id2 does not exist.");
                             let (c2_is_static, c2_vel_add) = if c2.is_static {
-                                (
-                                    true,
-                                    if unsafe { c2.ctu.stat } {
-                                        c2.body.vel
-                                    } else {
-                                        cgmath::vec2(0.0, 0.0)
-                                    },
-                                )
+                                (true, if unsafe { c2.ctu.stat } { 
+                                    c2.body.vel 
+                                } else { 
+                                    cgmath::vec2(0.0, 0.0) 
+                                })
                             } else {
                                 (false, cgmath::vec2(0.0, 0.0))
                             };
@@ -658,20 +626,14 @@ impl Plane {
                                 (c1.trigger)(id1, id2, data.travel * t, data, epsilon);
                             } else if c1.is_static {
                                 c1.remainder -= data.travel;
-                                c1.body.translate(
-                                    c1.body.vel.mul_element_wise(t * data.travel)
-                                        + data.norm.mul_element_wise(epsilon),
-                                );
+                                c1.body.translate(c1.body.vel.mul_element_wise(t * data.travel) + data.norm.mul_element_wise(epsilon));
                                 let vel = unsafe {
                                     (*c1.ctu.reacter).react(c1.body.vel, id1, id2, data, epsilon)
                                 };
                                 c1.body.vel += vel + c2_vel_add;
                                 let broad = c1.body.get_broad();
                                 c1.broad_y = (broad.min.y, broad.max.y);
-                                to_sort.insert(
-                                    id1,
-                                    ((val1_be_b, be_index), (broad.min.y, broad.max.y)),
-                                );
+                                to_sort.insert(id1, ((val1_be_b, be_index), (broad.min.y, broad.max.y)));
                             }
 
                             if !was_candidate {
@@ -695,44 +657,42 @@ impl Plane {
         self.require_resort = false;
     }
 
-    /* pub fn get_be_list_indecies(&self, id: usize, minx: f64, maxx: f64) -> (usize, usize) {
-          //! Binary searches be_list for the b & e values belonging to the id provided.
-          //! Returns indecies of `(b, e)`, or `(usize::MAX, usize::MAX)` if minx and maxx aren't found. <br>
-          //! Ensure be_list is sorted.
-          let len = self.be_list.len();
-          let mut b = usize::MAX;
-          for i in self.get_be_list_leftmost(minx)..len {
-             if self.be_list[i].1 == id {
-                b = i;
-                break;
-             }
-          }
-          let mut e = usize::MAX;
-          for i in self.get_be_list_leftmost(maxx)..len {
-             if self.be_list[i].1 == id {
-                e = i;
-                break;
-             }
-          }
-          (b, e)
-       }
-       pub fn get_be_list_leftmost(&self, x: f64) -> usize {
-          //! Binary searches be_list for the leftmost valid position for x. <br>
-          //! Ensure be_list is sorted.
-          let mut lo = 0;
-          let mut hi = self.be_list.len();
-          while lo < hi {
-             let half = (lo + hi) / 2;
-             if self.be_list[half].2 < x {
-                lo = half + 1;
-             } else {
-                hi = half;
-             }
-          }
-          lo
-       }
-
-    */
+/* pub fn get_be_list_indecies(&self, id: usize, minx: f64, maxx: f64) -> (usize, usize) {
+        //! Binary searches be_list for the b & e values belonging to the id provided.
+        //! Returns indecies of `(b, e)`, or `(usize::MAX, usize::MAX)` if minx and maxx aren't found. <br>
+        //! Ensure be_list is sorted.
+        let len = self.be_list.len();
+        let mut b = usize::MAX;
+        for i in self.get_be_list_leftmost(minx)..len {
+            if self.be_list[i].1 == id {
+            b = i;
+            break;
+            }
+        }
+        let mut e = usize::MAX;
+        for i in self.get_be_list_leftmost(maxx)..len {
+            if self.be_list[i].1 == id {
+            e = i;
+            break;
+            }
+        }
+        (b, e)
+    }
+    pub fn get_be_list_leftmost(&self, x: f64) -> usize {
+        //! Binary searches be_list for the leftmost valid position for x. <br>
+        //! Ensure be_list is sorted.
+        let mut lo = 0;
+        let mut hi = self.be_list.len();
+        while lo < hi {
+            let half = (lo + hi) / 2;
+            if self.be_list[half].2 < x {
+            lo = half + 1;
+            } else {
+            hi = half;
+            }
+        }
+        lo
+    }*/
 }
 
 // ---------- Sorting Algorithms ---------- //

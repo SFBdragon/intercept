@@ -9,8 +9,11 @@ edition = "2018"
 [profile.release]
 opt-level=3
 
+[features]
+f64 = []
+
 [dependencies]
-cgmath = "0.18.0"
+glam = "0.16.0"
 fnv = "1.0.7"
 indexmap = "1.6.2"
 

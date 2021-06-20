@@ -1,29 +1,26 @@
 //! Narrowphase data and logic module.
 pub mod swept;
 
-use cgmath::{ElementWise, InnerSpace, Vector2};
-use std::{
-    fmt::{Debug, Formatter},
-    mem::ManuallyDrop,
-};
+use crate::{Fp, Vec2};
+use std::{fmt::{Debug, Formatter}, mem::ManuallyDrop};
 
 // ---------- Point & Line ---------- //
 
 #[inline]
-pub fn colinearity_test(a: Vector2<f64>, b: Vector2<f64>, c: Vector2<f64>) -> bool {
+pub fn colinearity_test(a: Vec2, b: Vec2, c: Vec2) -> bool {
     //! Returns whether all three points are colinear.
     let ba = a - b;
     let cb = b - c;
-    ba.perp_dot(cb) == 0.0 && ba.dot(cb) > 0.0
+    ba.perp_dot(cb) == 0.0 && ba.dot(cb) > 0.0 // fixme: fp cmp
 }
 #[inline]
-pub fn point_normal_test(loc: Vector2<f64>, a: Vector2<f64>, normal: Vector2<f64>) -> bool {
+pub fn point_normal_test(loc: Vec2, a: Vec2, normal: Vec2) -> bool {
     //! Returns whether the point is toward the opposite direction of the normal from the vertex `a`.
     normal.dot(loc - a) <= 0.0
 }
 
 #[inline]
-pub fn seg_seg_test(a1: Vector2<f64>, a2: Vector2<f64>, b1: Vector2<f64>, b2: Vector2<f64>) -> bool {
+pub fn seg_seg_test(a1: Vec2, a2: Vec2, b1: Vec2, b2: Vec2) -> bool {
     //! Returns whether a line segment-line segment intersection occurs.
     let da = a2 - a1;
     let db = b2 - b1;
@@ -32,70 +29,56 @@ pub fn seg_seg_test(a1: Vector2<f64>, a2: Vector2<f64>, b1: Vector2<f64>, b2: Ve
 
     // ensures result is consistent with line_line_query()
     // prevents rust from doing unpck optimisations that decrease perf
-    if dot == 0.0 {
-        return false;
-    }
+    if dot == 0.0 { return false; }
     let dd = dot * dot;
 
     let nd1 = a1 - b1;
-    let tdd = (da.x * nd1.y - da.y * nd1.x) * dot;
-    let udd = (db.x * nd1.y - db.y * nd1.x) * dot;
+    let tdd = da.perp_dot(nd1) * dot;
+    let udd = db.perp_dot(nd1) * dot;
     udd >= 0.0 && udd <= dd && tdd >= 0.0 && tdd <= dd
 }
 #[inline]
-pub fn seg_seg_query(a1: Vector2<f64>, a2: Vector2<f64>, b1: Vector2<f64>, b2: Vector2<f64>) -> Option<f64> {
+pub fn seg_seg_query(a1: Vec2, a2: Vec2, b1: Vec2, b2: Vec2) -> Option<Fp> {
     //! Returns the coefficient distance along line segment `a` an intersection occurs.
     let da = a2 - a1;
     let db = b2 - b1;
 
     let dot = da.x * db.y - db.x * da.y;
-    if dot == 0.0 {
-        return None;
-    } // guard against colinearity
+    if dot == 0.0 { return None; } // guard against colinearity
     let dd = dot * dot;
 
     let nd1 = a1 - b1;
-    let tdd = (db.x * nd1.y - db.y * nd1.x) * dot;
-    if tdd < 0.0 || tdd > dd {
-        return None;
-    } // seg a guard
+    let tdd = db.perp_dot(nd1) * dot;
+    if tdd < 0.0 || tdd > dd { return None; } // seg a guard
 
-    let udd = (da.x * nd1.y - da.y * nd1.x) * dot;
-    if udd < 0.0 || udd > dd {
-        return None;
-    } // seg b guard
+    let udd = da.perp_dot(nd1) * dot;
+    if udd < 0.0 || udd > dd { return None; } // seg b guard
 
     Some(tdd / dd)
 }
 #[inline]
-pub fn line_seg_query(o: Vector2<f64>, n: Vector2<f64>, b1: Vector2<f64>, b2: Vector2<f64>) -> Option<f64> {
+pub fn line_seg_query(o: Vec2, n: Vec2, b1: Vec2, b2: Vec2) -> Option<Fp> {
     //! Returns the distance along line from `o` an intersection occurs.
     let db = b2 - b1;
 
     let dot = n.x * db.y - db.x * n.y;
-    if dot == 0.0 {
-        return None;
-    } // guard against colinearity
+    if dot == 0.0 { return None; } // guard against colinearity
 
     let nd1 = o - b1;
-    let udd = (o.x * nd1.y - o.y * nd1.x) * dot;
-    if udd < 0.0 || udd > dot * dot {
-        return None;
-    } // seg b guard
+    let udd = o.perp_dot(nd1) * dot;
+    if udd < 0.0 || udd > dot * dot { return None; } // seg b guard
 
-    Some((db.x * nd1.y - db.y * nd1.x) / dot)
+    Some(db.perp_dot(nd1) / dot)
 }
 #[inline]
-pub fn seg_line_query(a1: Vector2<f64>, a2: Vector2<f64>, o: Vector2<f64>, n: Vector2<f64>) -> Option<f64> {
+pub fn seg_line_query(a1: Vec2, a2: Vec2, o: Vec2, n: Vec2) -> Option<Fp> {
     //! Returns the coefficient distance along line segment `a` an intersection occurs.
     let da = a2 - a1;
     let dot = da.x * n.y - n.x * da.y;
-    if dot == 0.0 {
-        return None;
-    } // guard against colinearity
+    if dot == 0.0 { return None; } // guard against colinearity
 
     let nd1 = a1 - o;
-    let t = (n.x * nd1.y - n.y * nd1.x) / dot;
+    let t = n.perp_dot(nd1) / dot;
     if t < 0.0 || t > 1.0 {
         None
     } else {
@@ -103,30 +86,28 @@ pub fn seg_line_query(a1: Vector2<f64>, a2: Vector2<f64>, o: Vector2<f64>, n: Ve
     }
 }
 #[inline]
-pub fn line_line_query(o1: Vector2<f64>, n1: Vector2<f64>, o2: Vector2<f64>, n2: Vector2<f64>) -> Option<f64> {
+pub fn line_line_query(o1: Vec2, n1: Vec2, o2: Vec2, n2: Vec2) -> Option<Fp> {
     //! Returns the distance along line `1` from `o1` an intersection occurs.
     let dot = n1.x * n2.y - n2.x * n1.y;
-    if dot == 0.0 { // guard against colinearity
-        return None;
-    }
-    Some((n2.x * (o1.y - o2.y) - n2.y * (o1.x - o2.x)) / dot)
+    if dot == 0.0 { return None; } // guard against colinearity
+    Some(n2.perp_dot(o1 - o2) / dot)
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct Circle {
-    pub rad: f64,
-    pub pos: Vector2<f64>,
+    pub rad: Fp,
+    pub pos: Vec2,
 }
 impl Circle {
     #[inline]
-    pub fn new(rad: f64, posx: f64, posy: f64) -> Circle {
+    pub fn new(rad: Fp, posx: Fp, posy: Fp) -> Circle {
         Circle {
-            rad: f64::abs(rad),
-            pos: cgmath::vec2(posx, posy),
+            rad: rad.abs(),
+            pos: Vec2::new(posx, posy),
         }
     }
     #[inline]
-    pub fn translate(self, offset: Vector2<f64>) -> Circle {
+    pub fn translate(self, offset: Vec2) -> Circle {
         Circle {
             pos: self.pos + offset,
             rad: self.rad,
@@ -145,21 +126,21 @@ impl Circle {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Aabb {
-    pub min: Vector2<f64>,
-    pub max: Vector2<f64>,
+    pub min: Vec2,
+    pub max: Vec2,
 }
 impl Aabb {
     #[inline]
-    pub fn new(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Aabb {
+    pub fn new(minx: Fp, miny: Fp, maxx: Fp, maxy: Fp) -> Aabb {
         assert!(minx < maxx);
         assert!(miny < maxy);
 
         Aabb {
-            min: cgmath::vec2(minx, miny),
-            max: cgmath::vec2(maxx, maxy),
+            min: Vec2::new(minx, miny),
+            max: Vec2::new(maxx, maxy),
         }
     }
-    pub fn new_safe(ax: f64, by: f64, cx: f64, dy: f64) -> Aabb {
+    pub fn new_safe(ax: Fp, by: Fp, cx: Fp, dy: Fp) -> Aabb {
         //! Orders minimum and maximum values.
         if ax < cx {
             if by < dy {
@@ -177,15 +158,15 @@ impl Aabb {
     }
 
     #[inline]
-    pub fn minx_maxy(self) -> Vector2<f64> {
-        cgmath::vec2(self.min.x, self.max.y)
+    pub fn minx_maxy(self) -> Vec2 {
+        Vec2::new(self.min.x, self.max.y)
     }
     #[inline]
-    pub fn maxx_miny(self) -> Vector2<f64> {
-        cgmath::vec2(self.max.x, self.min.y)
+    pub fn maxx_miny(self) -> Vec2 {
+        Vec2::new(self.max.x, self.min.y)
     }
     #[inline]
-    pub fn translate(self, offset: Vector2<f64>) -> Aabb {
+    pub fn translate(self, offset: Vec2) -> Aabb {
         Aabb {
             min: self.min + offset,
             max: self.max + offset,
@@ -193,15 +174,15 @@ impl Aabb {
     }
 
     #[inline]
-    pub fn broaden(&self, dir: Vector2<f64>) -> Aabb {
+    pub fn broaden(&self, dir: Vec2) -> Aabb {
         Aabb {
-            min: cgmath::vec2(
-                f64::min(self.min.x, self.min.x + dir.x),
-                f64::min(self.min.y, self.min.y + dir.y),
+            min: Vec2::new(
+                Fp::min(self.min.x, self.min.x + dir.x),
+                Fp::min(self.min.y, self.min.y + dir.y),
             ),
-            max: cgmath::vec2(
-                f64::max(self.max.x, self.max.x + dir.x),
-                f64::max(self.max.y, self.max.y + dir.y),
+            max: Vec2::new(
+                Fp::max(self.max.x, self.max.x + dir.x),
+                Fp::max(self.max.y, self.max.y + dir.y),
             ),
         }
     }
@@ -212,17 +193,17 @@ impl Aabb {
 pub struct Poly {
     pub aabb: Aabb,
     /// First vertex's duplicate tails. `verts.len() - 1 == norms.len()`
-    pub verts: Vec<Vector2<f64>>,
+    pub verts: Vec<Vec2>,
     /// Length equals actual vertex count. `verts.len() - 1 == norms.len()`
-    pub norms: Vec<Vector2<f64>>,
+    pub norms: Vec<Vec2>,
 }
 impl Poly {
     /// `verts` must form a convex polygon. `verts` must not contain duplicate or interior vertices.
-    pub fn new(verts: &[Vector2<f64>]) -> Poly {
+    pub fn new(verts: &[Vec2]) -> Poly {
         let len = verts.len();
         let mut index = 0;
 
-        let mut topmost_y = f64::MIN;
+        let mut topmost_y = Fp::MIN;
         for (i, v) in verts.iter().enumerate() {
             if v.y > topmost_y {
                 index = i;
@@ -236,12 +217,12 @@ impl Poly {
         order[index] = 0;
 
         // giftwrap
-        let mut a = Vector2::<f64>::unit_x();
+        let mut a = Vec2::new(1.0, 0.0);
         for v in 0..(len - 1) {
             let vert = verts[order[v]];
-            let mut best = f64::MIN;
+            let mut best = Fp::MIN;
             for i in (v + 1)..len {
-                let dot = a.dot((verts[order[i]] - vert).normalize()) as f64;
+                let dot = a.dot((verts[order[i]] - vert).normalize()) as Fp;
                 if dot > best {
                     index = i;
                     best = dot;
@@ -259,39 +240,24 @@ impl Poly {
         Poly::new_from_wound(ordered_and_duped)
     }
     /// `verts` must form a convex polygon, be wrapped clockwise, and must contain a duplicate of the first trailing vertex.
-    pub fn new_from_wound(verts: Vec<Vector2<f64>>) -> Poly {
+    pub fn new_from_wound(verts: Vec<Vec2>) -> Poly {
         let len = verts.len() - 1; // verts contains a duplicate trailing vertex
         let mut norms = Vec::with_capacity(len);
-        let (mut ix, mut iy, mut ax, mut ay) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        let (mut ix, mut iy, mut ax, mut ay) = (Fp::MAX, Fp::MAX, Fp::MIN, Fp::MIN);
         for i in 0..len {
-            norms.push(
-                cgmath::vec2(-(verts[i + 1].y - verts[i].y), verts[i + 1].x - verts[i].x)
-                    .normalize(),
-            );
+            norms.push(Vec2::new(-(verts[i + 1].y - verts[i].y), verts[i + 1].x - verts[i].x).normalize());
 
-            if verts[i].x < ix {
-                ix = verts[i].x;
-            }
-            if verts[i].x > ax {
-                ax = verts[i].x;
-            }
-            if verts[i].y < iy {
-                iy = verts[i].y;
-            }
-            if verts[i].y > ay {
-                ay = verts[i].y;
-            }
+            if verts[i].x < ix { ix = verts[i].x; }
+            if verts[i].x > ax { ax = verts[i].x; }
+            if verts[i].y < iy { iy = verts[i].y; }
+            if verts[i].y > ay { ay = verts[i].y; }
         }
 
-        Poly {
-            aabb: Aabb::new(ix, iy, ax, ay),
-            verts,
-            norms,
-        }
+        Poly { aabb: Aabb::new(ix, iy, ax, ay), verts, norms }
     }
 
     #[inline]
-    pub fn translate(mut self, offset: Vector2<f64>) -> Poly {
+    pub fn translate(mut self, offset: Vec2) -> Poly {
         self.aabb = self.aabb.translate(offset);
         for i in 0..self.verts.len() {
             self.verts[i] += offset;
@@ -311,7 +277,7 @@ fn aabb_circle_test(&Aabb { min, max }: &Aabb, &Circle { rad, pos }: &Circle) ->
     {
         if pos.x < min.x {
             if pos.y < min.y {
-                return rad * rad >= (min - pos).magnitude2();
+                return rad * rad >= (min - pos).length_squared();
             } else if pos.y > max.y {
                 let dx = pos.x - min.x;
                 let dy = pos.y - max.y;
@@ -323,7 +289,7 @@ fn aabb_circle_test(&Aabb { min, max }: &Aabb, &Circle { rad, pos }: &Circle) ->
                 let dy = pos.y - min.y;
                 return rad * rad >= dx * dx + dy * dy;
             } else if pos.y > max.y {
-                return rad * rad >= (pos - max).magnitude2();
+                return rad * rad >= (pos - max).length_squared();
             }
         }
         true
@@ -372,14 +338,14 @@ fn poly_circle_test(poly: &Poly, circle: &Circle) -> bool {
         // pseudo SAT tests
         let v = poly.verts[i];
         let vc = circle.pos - v;
-        let dot = poly.norms[i].dot(vc) as f64; // >0: SA, <=0: no SA
+        let dot = poly.norms[i].dot(vc) as Fp; // >0: SA, <=0: no SA
         if dot <= 0.0 {
             continue; // axis does not seperate center
         } else {
             found_separating_axis = true;
             if dot <= circle.rad {
                 // if extended axis encompases center
-                let x = (poly.verts[i + 1] - v).dot(vc) as f64;
+                let x = (poly.verts[i + 1] - v).dot(vc) as Fp;
                 if x >= 0.0 && x <= 1.0 {
                     return true; // circle definitely touches line
                 } else {
@@ -398,57 +364,59 @@ fn poly_circle_test(poly: &Poly, circle: &Circle) -> bool {
 pub trait Intersect {
     fn get_bounding_box(&self) -> Aabb;
 
-    fn point_test(&self, point: Vector2<f64>) -> bool; // point test
-    fn line_test(&self, a: Vector2<f64>, b: Vector2<f64>) -> bool; // line intersection
-    fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<f64>; // line entrypoint distance coeff
+    fn point_test(&self, point: Vec2) -> bool;
+    fn line_test(&self, a: Vec2, b: Vec2) -> bool;
+    fn line_query(&self, a: Vec2, b: Vec2) -> Option<Fp>; // line entrypoint distance coeff
 
-    fn circle_test(&self, circle: &Circle) -> bool; // circle intersection
-    fn aabb_test(&self, aabb: &Aabb) -> bool; // aabb intersection
-    fn poly_test(&self, poly: &Poly) -> bool; // poly intersection
+    fn circle_test(&self, circle: &Circle) -> bool;
+    fn aabb_test(&self, aabb: &Aabb) -> bool;
+    fn poly_test(&self, poly: &Poly) -> bool;
 }
 
 impl Intersect for Circle {
     #[inline]
     fn get_bounding_box(&self) -> Aabb {
+        let splat = Vec2::splat(self.rad);
         Aabb {
-            min: self.pos.sub_element_wise(self.rad),
-            max: self.pos.add_element_wise(self.rad),
+            min: self.pos - splat,
+            max: self.pos + splat,
         }
     }
 
     #[inline]
-    fn point_test(&self, a: Vector2<f64>) -> bool {
+    fn point_test(&self, a: Vec2) -> bool {
         //! Return whether a circle-point intersect occurs.
-        self.rad * self.rad
-            <= (self.pos.x - a.x) * (self.pos.x - a.x) + (self.pos.y - a.y) * (self.pos.y - a.y)
+        self.rad * self.rad <= (self.pos.x - a.x) * (self.pos.x - a.x) + (self.pos.y - a.y) * (self.pos.y - a.y)
     }
-    fn line_test(&self, a: Vector2<f64>, b: Vector2<f64>) -> bool {
+    fn line_test(&self, a: Vec2, b: Vec2) -> bool {
         //! Returns whether a circle-line intersection occurs.
-        let dx = b.x - a.x;
-        let dy = b.y - a.y;
-        let mag = dx * dx + dy * dy;
-        let u = (self.pos.x - a.x) * dx + (self.pos.y - a.y) * dy;
-        if u < 0.0 || u > mag {
-            return false;
-        }
-        let u = u / mag;
+        let ca = a - self.pos;
+        let ab = b - a;
+        let inv_ab_len = 1.0 / ab.length();
+        let unit = ab * inv_ab_len; // normalization
 
-        let distx = self.pos.x - (a.x + u * dx);
-        let disty = self.pos.y - (b.y + u * dy);
-        self.rad * self.rad >= distx * distx + disty * disty
+        let dot = unit.dot(ca);
+        let rad_discr = self.rad * self.rad + dot * dot - ca.length_squared();
+        if rad_discr > 0.0 {
+            let dist = -(dot + rad_discr.sqrt()) * inv_ab_len;
+            if dist >= 0.0 && dist <= 1.0 {
+                return true;
+            }
+        }
+        false
     }
     #[inline]
-    fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<f64> {
+    fn line_query(&self, a: Vec2, b: Vec2) -> Option<Fp> {
         //! Returns the coefficient distance along line segment `a->b` an intersection occurs. Does not return tangents.
-        let diff = a - self.pos;
+        let ca = a - self.pos;
         let ab = b - a;
-        let inv_size = 1.0 / (ab.magnitude2() as f64).sqrt();
-        let unit = ab.mul_element_wise(inv_size); // normalization
+        let inv_ab_len = 1.0 / ab.length();
+        let unit = ab * inv_ab_len; // normalization
 
-        let dot = unit.dot(diff) as f64;
-        let rad_discr = self.rad * self.rad + dot * dot - diff.magnitude2() as f64;
+        let dot = unit.dot(ca);
+        let rad_discr = self.rad * self.rad + dot * dot - ca.length_squared();
         if rad_discr > 0.0 {
-            let dist = -(dot + rad_discr.sqrt()) * inv_size;
+            let dist = -(dot + rad_discr.sqrt()) * inv_ab_len;
             if dist >= 0.0 && dist <= 1.0 {
                 return Some(dist);
             }
@@ -456,9 +424,10 @@ impl Intersect for Circle {
         None
     }
 
+
     #[inline]
     fn circle_test(&self, c: &Circle) -> bool {
-        (self.rad - c.rad) * (self.rad - c.rad) <= (self.pos - c.pos).magnitude2()
+        (self.rad + c.rad) * (self.rad + c.rad) >= (self.pos - c.pos).length_squared()
     }
     #[inline]
     fn aabb_test(&self, aabb: &Aabb) -> bool {
@@ -476,30 +445,32 @@ impl Intersect for Aabb {
     }
 
     #[inline]
-    fn point_test(&self, point: Vector2<f64>) -> bool {
+    fn point_test(&self, point: Vec2) -> bool {
         //! Returns whether an AABB-point intersection occurs.
         point.x >= self.min.x
             && point.x <= self.max.x
             && point.y >= self.min.y
             && point.y <= self.max.y
     }
-    fn line_test(&self, a: Vector2<f64>, b: Vector2<f64>) -> bool {
+    fn line_test(&self, a: Vec2, b: Vec2) -> bool {
         //! Returns whether an AABB-line intersection occurs.
-        // SAT tests (https://www.gamedev.net/forums/topic/338987-aabb---line-segment-intersection-test/)
-        let halfab = (b - a).mul_element_wise(0.5);
-        let halfaabb = (self.max - self.min).mul_element_wise(0.5);
-        let halfdiff = a + halfab - (self.min + self.max).mul_element_wise(0.5);
-        let abs_hd_x = f64::abs(halfab.x);
-        let abs_hd_y = f64::abs(halfab.y);
-        !(f64::abs(halfdiff.x) > halfaabb.x + abs_hd_x
-        || f64::abs(halfdiff.y) > halfaabb.y + abs_hd_y
-        || f64::abs(halfab.x * halfdiff.y - halfab.y * halfdiff.x) > halfaabb.x * abs_hd_y + halfaabb.y * abs_hd_x + 0.00001)
+        // SAT tests: https://www.gamedev.net/forums/topic/338987-aabb---line-segment-intersection-test/
+        let half_ab = (b - a) * 0.5;
+        let half_aabb = (self.max - self.min) * 0.5;
+        let half_diff = a + half_ab - (self.min + self.max) * 0.5;
+        let abs_hd_x = Fp::abs(half_ab.x);
+        let abs_hd_y = Fp::abs(half_ab.y);
+        !(Fp::abs(half_diff.x) > half_aabb.x + abs_hd_x
+        || Fp::abs(half_diff.y) > half_aabb.y + abs_hd_y
+        || Fp::abs(half_ab.x * half_diff.y - half_ab.y * half_diff.x) > half_aabb.x * abs_hd_y + half_aabb.y * abs_hd_x + 0.00001)
     }
-    fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<f64> {
+    fn line_query(&self, a: Vec2, b: Vec2) -> Option<Fp> {
         //! Returns the coefficient distance along line segment `a->b` an intersection occurs.
+
+        // Inlined seg-seg tests, cancelling for axis-aligned normals, and simultaneously guaranteeing axis-aligned guards and a->b directionality:
         let ab = b - a;
+        // l/r tests
         if a.x < self.min.x {
-            // l/r tests
             if b.x > self.min.x {
                 let t = (self.min.x - a.x) / ab.x;
                 if t >= 0.0 || t <= 1.0 {
@@ -514,8 +485,8 @@ impl Intersect for Aabb {
                 }
             }
         }
+        // t/d tests
         if a.y < self.min.y {
-            // t/d tests
             if b.y > self.min.y {
                 let t = (self.min.y - a.y) / ab.y;
                 if t >= 0.0 || t <= 1.0 {
@@ -555,15 +526,15 @@ impl Intersect for Poly {
         self.aabb
     }
 
-    fn point_test(&self, loc: Vector2<f64>) -> bool {
+    fn point_test(&self, loc: Vec2) -> bool {
         (0..self.norms.len()).all(|i| point_normal_test(loc, self.verts[i], self.norms[i]))
     }
-    fn line_test(&self, a: Vector2<f64>, b: Vector2<f64>) -> bool {
+    fn line_test(&self, a: Vec2, b: Vec2) -> bool {
         //! Returns whether a line-polygon intersection occurs.
         let len = self.norms.len();
         (0..len).any(|i| seg_seg_test(self.verts[i], self.verts[i + 1], a, b))
     }
-    fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<f64> {
+    fn line_query(&self, a: Vec2, b: Vec2) -> Option<Fp> {
         //! Returns the coefficient distance along line segment `a->b` an intersection occurs.
         let len = self.norms.len();
         let line = b - a;
@@ -592,7 +563,7 @@ impl Intersect for Poly {
         'axes1: for i in 0..len1 {
             // seperating axis algorithm
             let n = self.norms[i];
-            let max = n.dot(self.verts[i]) as f64;
+            let max = n.dot(self.verts[i]) as Fp;
             for v in 0..len2 {
                 if max >= n.dot(other.verts[v]) {
                     continue 'axes1; // invalid axis if it does not seperate
@@ -603,7 +574,7 @@ impl Intersect for Poly {
         'axes2: for i in 0..len2 {
             // rewind logo problem necessitates both polys be verified
             let n = other.norms[i];
-            let max = n.dot(other.verts[i]) as f64;
+            let max = n.dot(other.verts[i]) as Fp;
             for v in 0..len1 {
                 if max >= n.dot(self.verts[v]) {
                     continue 'axes2; // invalid axis if it does not seperate
@@ -879,10 +850,7 @@ impl Debug for Shape {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         f.debug_struct("Shape")
             .field("id", &self.id)
-            .field(
-                "shape",
-                shape_match!(self => { Circle(c) => c, Aabb(a) => a, Poly(p) => p }),
-            )
+            .field("shape", shape_match!(self => { Circle(c) => c, Aabb(a) => a, Poly(p) => p }))
             .finish()
     }
 }
@@ -895,14 +863,14 @@ impl Intersect for Shape {
         })
     }
 
-    fn point_test(&self, loc: Vector2<f64>) -> bool {
+    fn point_test(&self, loc: Vec2) -> bool {
         shape_match!(self => {
            Circle(c) => c.point_test(loc),
            Aabb(a) => a.point_test(loc),
            Poly(p) => p.point_test(loc)
         })
     }
-    fn line_test(&self, a: Vector2<f64>, b: Vector2<f64>) -> bool {
+    fn line_test(&self, a: Vec2, b: Vec2) -> bool {
         //! Returns whether a line-shape intersection occurs.
         shape_match!(self => {
            Circle(c) => c.line_test(a, b),
@@ -910,7 +878,7 @@ impl Intersect for Shape {
            Poly(p) => p.line_test(a, b)
         })
     }
-    fn line_query(&self, a: Vector2<f64>, b: Vector2<f64>) -> Option<f64> {
+    fn line_query(&self, a: Vec2, b: Vec2) -> Option<Fp> {
         //! Returns the coefficient distance along line segment `a->b` an intersection occurs.
         shape_match!(self => {
            Circle(c) => c.line_query(a, b),
@@ -945,73 +913,81 @@ impl Intersect for Shape {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cgmath::vec2;
 
     #[test]
     fn line_seg_test() {
-        assert_eq!(seg_seg_query(vec2(0.0, 0.0), vec2(3.0, 1.0), vec2(2.0, 1.0), vec2(2.0, -4.0)), Some(2.0 / 3.0));
-        assert_eq!(seg_seg_query(vec2(3.0, 1.0), vec2(0.0, 0.0), vec2(2.0, 1.0), vec2(2.0, -4.0)), Some(1.0 / 3.0));
+        assert_eq!(seg_seg_query(Vec2::new(0.0, 0.0), Vec2::new(3.0, 1.0), Vec2::new(2.0, 1.0), Vec2::new(2.0, -4.0)), Some(2.0 / 3.0));
+        assert_eq!(seg_seg_query(Vec2::new(3.0, 1.0), Vec2::new(0.0, 0.0), Vec2::new(2.0, 1.0), Vec2::new(2.0, -4.0)), Some(1.0 / 3.0));
     }
 
     #[test]
     fn circle_seg_test() {
         let c = Circle::new(0.5, 0.5, 0.5);
 
-        assert!(c.line_query(vec2(0.0, 1.0), vec2(3.0, 1.0)).is_none());
-        assert!(c.line_query(vec2(3.0, 1.0), vec2(0.0, 1.0)).is_none());
-        assert!(c.line_query(vec2(0.0, 0.0), vec2(-1.0, -1.0)).is_none());
+        assert!(!c.line_test(Vec2::new(0.0, 1.0), Vec2::new(3.0, 1.0)));
+        assert!(!c.line_test(Vec2::new(3.0, 1.0), Vec2::new(0.0, 1.0)));
+        assert!(!c.line_test(Vec2::new(0.0, 0.0), Vec2::new(-1.0, -1.0)));
 
-        assert_eq!(c.line_query(vec2(-1.0, 0.5), vec2(3.0, 0.5)), Some(0.25));
-        assert!(c.line_query(vec2(0.0, 0.0), vec2(3.0, 1.0)).is_some());
-        assert!(c.line_query(vec2(3.0, 1.0), vec2(0.0, 0.0)).is_some());
-        assert!(c.line_query(vec2(0.0, 0.9), vec2(3.0, 1.0)).is_some());
+        assert!(c.line_test(Vec2::new(-1.0, 0.5), Vec2::new(3.0, 0.5)));
+        assert!(c.line_test(Vec2::new(0.0, 0.0), Vec2::new(3.0, 1.0)));
+        assert!(c.line_test(Vec2::new(3.0, 1.0), Vec2::new(0.0, 0.0)));
+        assert!(c.line_test(Vec2::new(0.0, 0.9), Vec2::new(3.0, 1.0)));
+
+        assert!(c.line_query(Vec2::new(0.0, 1.0), Vec2::new(3.0, 1.0)).is_none());
+        assert!(c.line_query(Vec2::new(3.0, 1.0), Vec2::new(0.0, 1.0)).is_none());
+        assert!(c.line_query(Vec2::new(0.0, 0.0), Vec2::new(-1.0, -1.0)).is_none());
+
+        assert_eq!(c.line_query(Vec2::new(-1.0, 0.5), Vec2::new(3.0, 0.5)), Some(0.25));
+        assert!(c.line_query(Vec2::new(0.0, 0.0), Vec2::new(3.0, 1.0)).is_some());
+        assert!(c.line_query(Vec2::new(3.0, 1.0), Vec2::new(0.0, 0.0)).is_some());
+        assert!(c.line_query(Vec2::new(0.0, 0.9), Vec2::new(3.0, 1.0)).is_some());
     }
 
     #[test]
     fn test_poly_poly() {
         let p1 = Poly::new(&[
-            vec2(0.0, 0.5),
-            vec2(0.5, 0.2),
-            vec2(0.5, -0.2),
-            vec2(0.0, -0.5),
-            vec2(-0.5, -0.2),
-            vec2(-0.5, 0.2),
+            Vec2::new(0.0, 0.5),
+            Vec2::new(0.5, 0.2),
+            Vec2::new(0.5, -0.2),
+            Vec2::new(0.0, -0.5),
+            Vec2::new(-0.5, -0.2),
+            Vec2::new(-0.5, 0.2),
         ])
-        .translate(vec2(0.5, 0.5));
+        .translate(Vec2::new(0.5, 0.5));
         let p2 = Poly::new(&[
-            vec2(0.0, 0.0),
-            vec2(1.0, 1.0),
-            vec2(1.0, 0.0),
-            vec2(0.0, 1.0),
+            Vec2::new(0.0, 0.0),
+            Vec2::new(1.0, 1.0),
+            Vec2::new(1.0, 0.0),
+            Vec2::new(0.0, 1.0),
         ])
-        .translate(vec2(0.8, 0.8));
+        .translate(Vec2::new(0.8, 0.8));
 
         assert!(p1.poly_test(&p2));
 
-        let p1 = p1.translate(vec2(0.5, 0.5));
-        let p2 = p2.translate(vec2(0.8, 0.8));
+        let p1 = p1.translate(Vec2::new(0.5, 0.5));
+        let p2 = p2.translate(Vec2::new(0.8, 0.8));
 
         assert!(!p1.poly_test(&p2));
 
         // poly swept sat confirmation
         let p1 = Poly::new(&[
-            vec2(0.0, 0.5),
-            vec2(0.5, 0.2),
-            vec2(0.5, -0.2),
-            vec2(0.0, -0.5),
-            vec2(-0.5, -0.2),
-            vec2(-0.5, 0.2),
+            Vec2::new(0.0, 0.5),
+            Vec2::new(0.5, 0.2),
+            Vec2::new(0.5, -0.2),
+            Vec2::new(0.0, -0.5),
+            Vec2::new(-0.5, -0.2),
+            Vec2::new(-0.5, 0.2),
         ])
-        .translate(vec2(0.5, 0.5))
-        .translate(vec2(1.0, 1.0));
+        .translate(Vec2::new(0.5, 0.5))
+        .translate(Vec2::new(1.0, 1.0));
         let p2 = Poly::new(&[
-            vec2(0.0, 0.0),
-            vec2(1.0, 1.0),
-            vec2(1.0, 0.0),
-            vec2(0.0, 1.0),
+            Vec2::new(0.0, 0.0),
+            Vec2::new(1.0, 1.0),
+            Vec2::new(1.0, 0.0),
+            Vec2::new(0.0, 1.0),
         ])
-        .translate(vec2(2.0, 1.0))
-        .translate(vec2(0.1, -0.2));
+        .translate(Vec2::new(2.0, 1.0))
+        .translate(Vec2::new(0.1, -0.2));
 
         assert!(!p1.poly_test(&p2));
     }

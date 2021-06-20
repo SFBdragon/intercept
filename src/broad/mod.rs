@@ -1,16 +1,11 @@
 pub mod reacter;
 
-use crate::{Aabb, Intersect, broad::reacter::Reacter, narrow::swept::{Body, BodySweepData}, swept::body_sweep};
-use cgmath::{ElementWise, Vector2};
+use crate::{*, prelude::narrow::*};
+use self::reacter::Reacter;
 use fnv::{FnvBuildHasher, FnvHashMap, FnvHashSet, FnvHasher};
 use indexmap::IndexMap;
-use std::{
-    cmp::Ordering,
-    collections::{HashMap, HashSet},
-    fmt::Debug,
-    hash::BuildHasherDefault,
-    mem::ManuallyDrop,
-};
+use std::{cmp::Ordering, fmt::Debug, hash::BuildHasherDefault, mem::ManuallyDrop, collections::{HashMap, HashSet}};
+
 
 union ColliderTypeUnion {
     /// Boolean indicates whether reacters should have this static Collider's velocity added to theirs as a result of the collision.
@@ -27,13 +22,13 @@ union ColliderTypeUnion {
 /// *Reacting-Reacting* : Reacter `.trigger(..)`, Reacter `.trigger(..)`
 pub struct Collider {
     pub body: Body,
-    pub trigger: Box<dyn Fn(usize, usize, f64, BodySweepData, f64)>,
+    pub trigger: Box<dyn Fn(usize, usize, Fp, BodySweepData, Fp)>,
 
     is_static: bool,
     ctu: ColliderTypeUnion,
 
-    broad_y: (f64, f64),
-    remainder: f64,
+    broad_y: (Fp, Fp),
+    remainder: Fp,
 }
 
 impl Debug for Collider {
@@ -68,7 +63,7 @@ impl Collider {
     }
     pub fn new_reacter_trigger(
         body: Body,
-        trigger: Box<dyn Fn(usize, usize, f64, BodySweepData, f64)>,
+        trigger: Box<dyn Fn(usize, usize, Fp, BodySweepData, Fp)>,
         reacter: Box<dyn Reacter>,
     ) -> Collider {
         let broad = body.get_broad();
@@ -102,18 +97,17 @@ impl Collider {
     /// This is usually recommended to be enabled for collisions to appear more sensible.
     pub fn new_static_trigger(
         body: Body,
-        trigger: Box<dyn Fn(usize, usize, f64, BodySweepData, f64)>,
+        trigger: Box<dyn Fn(usize, usize, Fp, BodySweepData, Fp)>,
         knock: bool,
     ) -> Collider {
         let broad = body.get_broad();
         Collider {
             body,
             trigger,
-
             is_static: false,
             ctu: ColliderTypeUnion { stat: knock },
             broad_y: (broad.min.y, broad.max.y),
-            remainder: 1.0,
+            remainder: 1.0
         }
     }
 }
@@ -133,7 +127,7 @@ pub struct Plane {
     //    2. screens/viewports are usually wider than they are tall
     //    3. game worlds are usually wider than they are tall
     //    4. Character/humanoid hitboxes are usually taller than they are wide, and next to each other
-    be_list: Vec<(bool, usize, f64)>,
+    be_list: Vec<(bool, usize, Fp)>,
 }
 
 impl Default for Plane {
@@ -208,12 +202,7 @@ impl Plane {
         self.rems.insert(id);
     }
 
-    pub fn line_query(
-        &self,
-        a: Vector2<f64>,
-        b: Vector2<f64>,
-        callback: &dyn Fn(usize, &Collider, f64) -> bool,
-    ) {
+    pub fn line_query(&self, a: Vec2, b: Vec2, callback: &dyn Fn(usize, &Collider, Fp) -> bool) {
         //! Invokes the callback for each Collider the aabb intersects with until no more intersections or the callback `(id, collider, coeff a->b)` returns false. <br>
         //! Requires that the broadphase be unflagged for recalculation and re-sorting.
         assert!(!self.require_recalc && !self.require_resort, "Ensure b & e values have been recalculated and re-sorted.");
@@ -285,8 +274,8 @@ impl Plane {
         for v in self.be_list.iter_mut() {
             if let Some(c) = self.table.get(&v.1) {
                 match v.0 {
-                    false => v.2 = f64::min(c.body.aabb.min.x, c.body.aabb.min.x + c.body.vel.x), // b value
-                    true => v.2 = f64::max(c.body.aabb.max.x, c.body.aabb.max.x + c.body.vel.x), // e value
+                    false => v.2 = Fp::min(c.body.aabb.min.x, c.body.aabb.min.x + c.body.vel.x), // b value
+                    true => v.2 = Fp::max(c.body.aabb.max.x, c.body.aabb.max.x + c.body.vel.x), // e value
                 }
             }
         }
@@ -326,12 +315,12 @@ impl Plane {
                     add.push((
                         false,
                         i,
-                        f64::min(c.body.aabb.min.x, c.body.aabb.min.x + c.body.vel.x),
+                        Fp::min(c.body.aabb.min.x, c.body.aabb.min.x + c.body.vel.x),
                     ));
                     add.push((
                         false,
                         i,
-                        f64::max(c.body.aabb.max.x, c.body.aabb.max.x + c.body.vel.x),
+                        Fp::max(c.body.aabb.max.x, c.body.aabb.max.x + c.body.vel.x),
                     ));
                 }
             }
@@ -391,7 +380,7 @@ impl Plane {
         self.rems = FnvHashSet::default();
     }
 
-    fn reposition_val(&mut self, index: usize, x: f64) {
+    fn reposition_val(&mut self, index: usize, x: Fp) {
         let old_val = self.be_list[index];
         let mut j = index;
         if x > old_val.2 {
@@ -407,7 +396,7 @@ impl Plane {
         }
         self.be_list[j] = (old_val.0, old_val.1, x);
     }
-    pub fn sweep_and_prune(&mut self, t: f64, epsilon: f64) {
+    pub fn sweep_and_prune(&mut self, t: Fp, epsilon: Fp) {
         //! Performs a [sweep and prune](https://en.wikipedia.org/wiki/Sweep_and_prune) broadphase algorithm implementation. 
         if self.require_recalc || self.require_resort || self.adds.is_some() || !self.rems.is_empty() {
             self.update();
@@ -478,11 +467,11 @@ impl Plane {
                             (true, if unsafe { c2.ctu.stat } {
                                     c2.body.vel
                                 } else {
-                                    cgmath::vec2(0.0, 0.0)
+                                    Vec2::ZERO
                                 },
                             )
                         } else {
-                            (false, cgmath::vec2(0.0, 0.0))
+                            (false, Vec2::ZERO)
                         };
 
                         // Modify c1 in response to the collision.
@@ -491,7 +480,7 @@ impl Plane {
                             (c1.trigger)(id1, id2, data.travel * t, data, epsilon);
                         } else if c1.is_static {
                             c1.remainder = 1.0 - data.travel; // c1.remainder == 1.0
-                            c1.body.translate(c1.body.vel.mul_element_wise(t * data.travel) + data.norm.mul_element_wise(epsilon));
+                            c1.body.translate(c1.body.vel * (t * data.travel) + data.norm * epsilon);
                             let vel = unsafe {
                                 (*c1.ctu.reacter).react(c1.body.vel, id1, id2, data, epsilon)
                             };
@@ -554,7 +543,7 @@ impl Plane {
                                 .get_mut(&id1)
                                 .expect("Table does not contain Id of val in be_list")
                         };
-                        let mut rem_diff = f64::NAN;
+                        let mut rem_diff = Fp::NAN;
 
                         // Find the closest collision, if any.
                         for (v2_id, v2_be_b) in active.iter() {
@@ -573,9 +562,9 @@ impl Plane {
                                     // Adjust for largest remainder
                                     let c1c2_rem_diff = (c2.remainder - c1.remainder) * t;
                                     if c1c2_rem_diff < 0.0 {
-                                        let offset = c2.body.vel.mul_element_wise(c1c2_rem_diff);
+                                        let offset = c2.body.vel * c1c2_rem_diff;
                                         c2.body.translate(offset);
-                                        if let Some(bsd) = body_sweep(&c1.body, &c2.body, t * c1.remainder) {
+                                        if let Some(bsd) = swept::body_sweep(&c1.body, &c2.body, t * c1.remainder) {
                                             if bsd.travel < data.travel {
                                                 was_candidate = false;
                                                 data = bsd;
@@ -586,9 +575,9 @@ impl Plane {
                                         }
                                         c2.body.translate(-offset);
                                     } else {
-                                        let offset = c1.body.vel.mul_element_wise(-c1c2_rem_diff);
+                                        let offset = c1.body.vel * -c1c2_rem_diff;
                                         c1.body.translate(offset);
-                                        if let Some(bsd) = body_sweep(&c1.body, &c2.body, t * c2.remainder) {
+                                        if let Some(bsd) = swept::body_sweep(&c1.body, &c2.body, t * c2.remainder) {
                                             if bsd.travel - c1c2_rem_diff < data.travel {
                                                 was_candidate = false;
                                                 data = bsd;
@@ -615,10 +604,10 @@ impl Plane {
                                 (true, if unsafe { c2.ctu.stat } { 
                                     c2.body.vel 
                                 } else { 
-                                    cgmath::vec2(0.0, 0.0) 
+                                    Vec2::ZERO
                                 })
                             } else {
-                                (false, cgmath::vec2(0.0, 0.0))
+                                (false, Vec2::ZERO)
                             };
 
                             // Modify c1 in response to the collision.
@@ -626,7 +615,7 @@ impl Plane {
                                 (c1.trigger)(id1, id2, data.travel * t, data, epsilon);
                             } else if c1.is_static {
                                 c1.remainder -= data.travel;
-                                c1.body.translate(c1.body.vel.mul_element_wise(t * data.travel) + data.norm.mul_element_wise(epsilon));
+                                c1.body.translate(c1.body.vel * (t * data.travel) + data.norm * epsilon);
                                 let vel = unsafe {
                                     (*c1.ctu.reacter).react(c1.body.vel, id1, id2, data, epsilon)
                                 };
@@ -649,7 +638,7 @@ impl Plane {
 
         // finally, update all clear paths
         for (_, c) in self.table.iter_mut() {
-            c.body.translate(c.body.vel.mul_element_wise(c.remainder));
+            c.body.translate(c.body.vel * c.remainder);
             c.remainder = 1.0;
         }
 
@@ -657,7 +646,7 @@ impl Plane {
         self.require_resort = false;
     }
 
-/* pub fn get_be_list_indecies(&self, id: usize, minx: f64, maxx: f64) -> (usize, usize) {
+/* pub fn get_be_list_indecies(&self, id: usize, minx: Fp, maxx: Fp) -> (usize, usize) {
         //! Binary searches be_list for the b & e values belonging to the id provided.
         //! Returns indecies of `(b, e)`, or `(usize::MAX, usize::MAX)` if minx and maxx aren't found. <br>
         //! Ensure be_list is sorted.
@@ -678,7 +667,7 @@ impl Plane {
         }
         (b, e)
     }
-    pub fn get_be_list_leftmost(&self, x: f64) -> usize {
+    pub fn get_be_list_leftmost(&self, x: Fp) -> usize {
         //! Binary searches be_list for the leftmost valid position for x. <br>
         //! Ensure be_list is sorted.
         let mut lo = 0;
@@ -699,7 +688,7 @@ impl Plane {
 
 // code based off of https://en.wikipedia.org/wiki/Insertion_sort#Algorithm
 #[inline]
-fn insertion_be(a: &mut Vec<(bool, usize, f64)>, lo: usize, hi: usize) {
+fn insertion_be(a: &mut Vec<(bool, usize, Fp)>, lo: usize, hi: usize) {
     for i in (lo + 1)..hi {
         let val = a[i];
         let mut j = i;
@@ -711,8 +700,8 @@ fn insertion_be(a: &mut Vec<(bool, usize, f64)>, lo: usize, hi: usize) {
     }
 }
 /*// code based off of https://en.wikipedia.org/wiki/Quicksort#Hoare_partition_scheme
-fn quicksort_be(a: &mut Vec<(bool, usize, f64)>, lo: usize, hi: usize) { // (hi: usize) will cause an OBOE error is given [Vec].len() here
-   fn partition(a: &mut Vec<(bool, usize, f64)>, lo: usize, hi: usize) -> usize {
+fn quicksort_be(a: &mut Vec<(bool, usize, Fp)>, lo: usize, hi: usize) { // (hi: usize) will cause an OBOE error is given [Vec].len() here
+   fn partition(a: &mut Vec<(bool, usize, Fp)>, lo: usize, hi: usize) -> usize {
       let pivot = a[(lo + hi) / 2];
       let mut i = lo;
       let mut j = hi;

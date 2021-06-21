@@ -226,7 +226,7 @@ fn circle_circle_sweep(b1: &Body, c1: &Circle, b2: &Body, c2: &Circle, t: Fp) ->
     let srad = c1.rad + c2.rad;
 
     let c2c1 = (b1.pos + c1.pos) - (b2.pos + c2.pos);
-    let dot = unit.dot(c2c1) as Fp;
+    let dot = unit.dot(c2c1);
     let discr = srad * srad + dot * dot - c2c1.length_squared();
     if discr > 0.0 {
         let dist = -(dot + discr.sqrt()) * inv_rv_len;
@@ -554,8 +554,8 @@ fn circle_poly_sweep(b1: &Body, circle: &Circle, b2: &Body, poly: &Poly, t: Fp) 
                 if t < 0.0 {
                     // modified circle collision algorithm
                     // note: this will never re-test prev v1 due to the circle-fallshort check
-                    let udotvo = unit_rv.dot(vo) as Fp;
-                    let rad_discr = udotvo * udotvo + cr2 - vo_mag2 as Fp;
+                    let udotvo = unit_rv.dot(vo);
+                    let rad_discr = udotvo * udotvo + cr2 - vo_mag2;
                     if rad_discr > 0.0 {
                         // tangential and passing lines are not collisions
                         let dist = -udotvo - rad_discr.sqrt();
@@ -571,7 +571,7 @@ fn circle_poly_sweep(b1: &Body, circle: &Circle, b2: &Body, poly: &Poly, t: Fp) 
                     return Some((vo.perp_dot(edge) / edge.perp_dot(rv), n));
                 } else {
                     let v1o = origin - poly.verts[i + 1];
-                    let udotv1o = unit_rv.dot(v1o) as Fp;
+                    let udotv1o = unit_rv.dot(v1o);
                     let rad_discr = udotv1o * udotv1o + cr2 - v1o.length_squared();
                     if rad_discr > 0.0 {
                         let dist = -udotv1o - rad_discr.sqrt();

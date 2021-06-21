@@ -222,7 +222,7 @@ impl Poly {
             let vert = verts[order[v]];
             let mut best = Fp::MIN;
             for i in (v + 1)..len {
-                let dot = a.dot((verts[order[i]] - vert).normalize()) as Fp;
+                let dot = a.dot((verts[order[i]] - vert).normalize());
                 if dot > best {
                     index = i;
                     best = dot;
@@ -338,14 +338,14 @@ fn poly_circle_test(poly: &Poly, circle: &Circle) -> bool {
         // pseudo SAT tests
         let v = poly.verts[i];
         let vc = circle.pos - v;
-        let dot = poly.norms[i].dot(vc) as Fp; // >0: SA, <=0: no SA
+        let dot = poly.norms[i].dot(vc); // >0: SA, <=0: no SA
         if dot <= 0.0 {
             continue; // axis does not seperate center
         } else {
             found_separating_axis = true;
             if dot <= circle.rad {
                 // if extended axis encompases center
-                let x = (poly.verts[i + 1] - v).dot(vc) as Fp;
+                let x = (poly.verts[i + 1] - v).dot(vc);
                 if x >= 0.0 && x <= 1.0 {
                     return true; // circle definitely touches line
                 } else {
@@ -563,7 +563,7 @@ impl Intersect for Poly {
         'axes1: for i in 0..len1 {
             // seperating axis algorithm
             let n = self.norms[i];
-            let max = n.dot(self.verts[i]) as Fp;
+            let max = n.dot(self.verts[i]);
             for v in 0..len2 {
                 if max >= n.dot(other.verts[v]) {
                     continue 'axes1; // invalid axis if it does not seperate
@@ -574,7 +574,7 @@ impl Intersect for Poly {
         'axes2: for i in 0..len2 {
             // rewind logo problem necessitates both polys be verified
             let n = other.norms[i];
-            let max = n.dot(other.verts[i]) as Fp;
+            let max = n.dot(other.verts[i]);
             for v in 0..len1 {
                 if max >= n.dot(self.verts[v]) {
                     continue 'axes2; // invalid axis if it does not seperate

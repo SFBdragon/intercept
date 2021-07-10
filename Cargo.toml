@@ -13,7 +13,8 @@ opt-level=3
 f64 = []
 
 [dependencies]
-glam = "0.16.0"
+approx = "0.4" # todo: change to 0.5 for next glam update
+glam = { version = "0.17.1", features = ["approx"] }
 fnv = "1.0.7"
 indexmap = "1.6.2"
 

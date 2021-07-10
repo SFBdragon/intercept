@@ -1,4 +1,5 @@
 //! Narrowphase data and logic module.
+
 pub mod swept;
 
 use crate::{Fp, Vec2};
@@ -93,7 +94,7 @@ pub fn line_line_query(o1: Vec2, n1: Vec2, o2: Vec2, n2: Vec2) -> Option<Fp> {
     Some(n2.perp_dot(o1 - o2) / dot)
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Circle {
     pub rad: Fp,
     pub pos: Vec2,
@@ -124,7 +125,7 @@ impl Circle {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Aabb {
     pub min: Vec2,
     pub max: Vec2,
@@ -189,7 +190,7 @@ impl Aabb {
 }
 
 /// A 2D convex polygon, vertices arranged clockwise - tailed with a duplicate of the first, with unit-length normals - without duplication.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Poly {
     pub aabb: Aabb,
     /// First vertex's duplicate tails. `verts.len() - 1 == norms.len()`
@@ -907,6 +908,22 @@ impl Intersect for Shape {
            Aabb(a) => a.poly_test(poly),
            Poly(p) => p.poly_test(poly)
         })
+    }
+}
+
+impl From<Circle> for Shape {
+    fn from(circle: Circle) -> Self {
+        Shape::circle(circle)
+    }
+}
+impl From<Aabb> for Shape {
+    fn from(aabb: Aabb) -> Self {
+        Shape::aabb(aabb)
+    }
+}
+impl From<Poly> for Shape {
+    fn from(poly: Poly) -> Self {
+        Shape::poly(poly)
     }
 }
 

@@ -2,9 +2,9 @@ pub mod reacter;
 
 use crate::{*, prelude::narrow::*};
 use self::reacter::Reacter;
-use fnv::{FnvBuildHasher, FnvHashMap, FnvHashSet, FnvHasher};
+use fnv::{FnvBuildHasher, FnvHashMap, FnvHashSet};
 use indexmap::IndexMap;
-use std::{cmp::Ordering, fmt::Debug, hash::BuildHasherDefault, mem::ManuallyDrop, collections::{HashMap, HashSet}};
+use std::{cmp::Ordering, fmt::Debug, mem::ManuallyDrop};
 
 
 union ColliderTypeUnion {
@@ -87,7 +87,7 @@ impl Collider {
             body,
             trigger: Box::new(|_, _, _, _, _| {}),
 
-            is_static: false,
+            is_static: true,
             ctu: ColliderTypeUnion { stat: knock },
             broad_y: (broad.min.y, broad.max.y),
             remainder: 1.0,
@@ -104,7 +104,7 @@ impl Collider {
         Collider {
             body,
             trigger,
-            is_static: false,
+            is_static: true,
             ctu: ColliderTypeUnion { stat: knock },
             broad_y: (broad.min.y, broad.max.y),
             remainder: 1.0
@@ -167,24 +167,33 @@ impl Plane {
 
     #[inline]
     pub fn get_collider(&self, id: usize) -> &Collider {
-        self.table.get(&id).expect("No Collider of this Id exists.")
+        //! # Panics
+        //! Panics if a collider with the specified ID does not exist.
+        self.table
+            .get(&id)
+            .expect("Plane does not contain the collider with the specified ID.")
     }
     #[inline]
     pub fn get_collider_mut(&mut self, id: usize) -> &mut Collider {
         //! Flags broadphase as requiring recalculation.
+        //! # Panics
+        //! Panics if a collider with the specified ID does not exist.
         self.require_recalc = true;
         self.table
             .get_mut(&id)
-            .expect("No Collider of this Id exists.")
+            .expect("Plane does not contain the collider with the specified ID.")
     }
     #[inline]
     pub unsafe fn get_collider_mut_silent(&mut self, id: usize) -> &mut Collider {
         //! This version does not flag the broadphase as requiring recalculation.
         //! # Safety
         //! Do not mutate the collider's velocity, position, or shapes, else unexpected/incorrect behaviour when the broadphase is invoked may occur.
+        //! # Panics
+        //! Panics if a collider with the specified ID does not exist.
+
         self.table
             .get_mut(&id)
-            .expect("No Collider of this Id exists.")
+            .expect("Plane does not contain the collider with the specified ID.")
     }
 
     pub fn add_collider(&mut self, c: Collider) -> usize {
@@ -198,26 +207,30 @@ impl Plane {
     }
     pub fn remove_collider(&mut self, id: usize) {
         //! Queues a collider for removal from the broadphase.
-        self.table.remove(&id);
+        //! # Panics
+        //! Panics if a collider with the specified ID does not exist. 
+        //! This may be due to the ID being incorrect, the collider having been removed, or the collider has not been incorporated into the broadphase yet.
+        //! Incorporation is performed by `Plane::update(&mut self)`.
+
         self.rems.insert(id);
+        if self.table.remove(&id).is_none() {
+            panic!("Plane does not contain the collider with the specified ID."); 
+        };
     }
 
     pub fn line_query(&self, a: Vec2, b: Vec2, callback: &dyn Fn(usize, &Collider, Fp) -> bool) {
         //! Invokes the callback for each Collider the aabb intersects with until no more intersections or the callback `(id, collider, coeff a->b)` returns false. <br>
         //! Requires that the broadphase be unflagged for recalculation and re-sorting.
+
         assert!(!self.require_recalc && !self.require_resort, "Ensure b & e values have been recalculated and re-sorted.");
 
         let aabb = Aabb::new_safe(a.x, a.y, b.x, b.y);
-        let mut active = HashSet::with_hasher(FnvBuildHasher::default());
+        let mut active = FnvHashSet::default();
         for val in self.be_list.iter() {
             if val.2 < aabb.min.x {
                 match val.0 {
-                    false => {
-                        let _ = active.insert(val.1);
-                    }
-                    true => {
-                        let _ = active.remove(&val.1);
-                    }
+                    false => { active.insert(val.1); }
+                    true => { active.remove(&val.1); }
                 }
             } else if val.2 > aabb.max.x {
                 active.insert(val.1);
@@ -242,7 +255,7 @@ impl Plane {
         //! Requires that the broadphase be unflagged for recalculation and resorting.
         assert!(!self.require_recalc && !self.require_resort, "Ensure b & e values have been recalculated and re-sorted.");
 
-        let mut active = HashSet::with_hasher(FnvBuildHasher::default());
+        let mut active = FnvHashSet::default();
         for val in self.be_list.iter() {
             if val.2 < aabb.min.x {
                 match val.0 {
@@ -285,7 +298,7 @@ impl Plane {
     pub fn sort_be_vals(&mut self) {
         //! Ensure broadphase is not flagged for recalculation. <br>
         //! Unflags the broadphase for requiring resorting.
-        assert!(!self.require_recalc, "Broadphase is flagged for requiring recalculation, cannot sort out-of-date data.");
+        assert!(!self.require_recalc, "Broadphase is flagged for requiring recalculation, will not sort out-of-date data.");
 
         // sort b & e values
         // insertion sort due to its adaptivity & efficiency: sort is expected to be mostly sorted due to temporal cohesion
@@ -398,13 +411,14 @@ impl Plane {
     }
     pub fn sweep_and_prune(&mut self, t: Fp, epsilon: Fp) {
         //! Performs a [sweep and prune](https://en.wikipedia.org/wiki/Sweep_and_prune) broadphase algorithm implementation. 
+
         if self.require_recalc || self.require_resort || self.adds.is_some() || !self.rems.is_empty() {
             self.update();
         }
         
         let mut active = IndexMap::with_hasher(FnvBuildHasher::default()); // id, b be index
-        let mut candidates = HashMap::with_hasher(FnvBuildHasher::default()); // id, (other id, other be b, bsd)
-        let mut to_sort = IndexMap::with_hasher(FnvBuildHasher::default()); // id, (be val indecies, x belist pos's)
+        let mut candidates = FnvHashMap::default(); // id, (other id, other be b, bsd)
+        let mut to_sort = IndexMap::with_hasher(FnvBuildHasher::default()); // id, (be val indecies, x belist pos's)       
         for (be_index, val) in self.be_list.iter().enumerate() {
             let id1 = val.1;
             match val.0 {
@@ -536,7 +550,7 @@ impl Plane {
                             continue;
                         }
 
-                        let table_raw: *mut HashMap<usize, Collider, BuildHasherDefault<FnvHasher>> = &mut self.table;
+                        let table_raw: *mut FnvHashMap<usize, Collider> = &mut self.table;
                         // Retrieve the collider.
                         let c1 = unsafe {
                             (*table_raw)
@@ -699,32 +713,21 @@ fn insertion_be(a: &mut Vec<(bool, usize, Fp)>, lo: usize, hi: usize) {
         a[j] = val;
     }
 }
-/*// code based off of https://en.wikipedia.org/wiki/Quicksort#Hoare_partition_scheme
-fn quicksort_be(a: &mut Vec<(bool, usize, Fp)>, lo: usize, hi: usize) { // (hi: usize) will cause an OBOE error is given [Vec].len() here
-   fn partition(a: &mut Vec<(bool, usize, Fp)>, lo: usize, hi: usize) -> usize {
-      let pivot = a[(lo + hi) / 2];
-      let mut i = lo;
-      let mut j = hi;
-      loop {
-         while a[i].2 < pivot.2 { i = i + 1; }
-         while a[j].2 > pivot.2 { j = j - 1; }
-         if i >= j {
-            return j
-         }
-         let t = a[i];
-         a[i] = a[j];
-         a[j] = t;
-      }
-   }
 
-   if lo < hi {
-      if hi - lo >= 12 {
-         let p = partition(a, lo, hi);
-         quicksort_be(a, lo, p);
-         quicksort_be(a, p + 1, hi);
-      } else {
-         // https://en.wikipedia.org/wiki/Quicksort#Hoare_partition_scheme, under 'Optimizations', 2nd
-         insertion_be(a, lo, hi);
-      }
-   }
-}*/
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn broad_intgr_test() {
+        let mut plane = Plane::default();
+        let col1 = Collider::new_static(
+            Body::new(vec![Aabb::new(-0.5, -0.5, 0.5, 0.5).into()], Vec2::splat(0.5), Vec2::X, false), 
+            true);
+
+        plane.add_collider(col1);
+
+        todo!();
+    }
+}

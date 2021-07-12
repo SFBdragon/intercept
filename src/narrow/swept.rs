@@ -604,41 +604,31 @@ fn circle_poly_sweep(b1: &Body, circle: &Circle, b2: &Body, poly: &Poly, t: Fp) 
 #[inline]
 fn shape_sweep(b1: &Body, s1: usize, b2: &Body, s2: usize, t: Fp) -> Option<(Fp, Vec2)> {
     // manual jump table implementation - decreases performance cost from 18-20ns to 3-5ns
-    // Safety: functions in jump table are decided by associated ids, each function is called only when union types are correct
-    fn circle_circle_sweep_inter(b1: &Body, su1: &ShapeUnion, b2: &Body, su2: &ShapeUnion, t: Fp) -> Option<(Fp, Vec2)> {
-        unsafe { circle_circle_sweep(b1, &su1.circle, b2, &su2.circle, t) }
-    }
-    fn aabb_aabb_sweep_inter(b1: &Body, su1: &ShapeUnion, b2: &Body, su2: &ShapeUnion, t: Fp) -> Option<(Fp, Vec2)> {
-        unsafe { aabb_aabb_sweep(b1, &su1.aabb, b2, &su2.aabb, t) }
-    }
-    fn poly_poly_sweep_inter(b1: &Body, su1: &ShapeUnion, b2: &Body, su2: &ShapeUnion, t: Fp) -> Option<(Fp, Vec2)> {
-        unsafe { poly_poly_sweep(b1, &su1.poly, b2, &su2.poly, t) }
-    }
-    fn circle_aabb_sweep_inter(b1: &Body, su1: &ShapeUnion, b2: &Body, su2: &ShapeUnion, t: Fp) -> Option<(Fp, Vec2)> {
-        unsafe { circle_aabb_sweep(b1, &su1.circle, b2, &su2.aabb, t) }
-    }
-    fn circle_poly_sweep_inter(b1: &Body, su1: &ShapeUnion, b2: &Body, su2: &ShapeUnion, t: Fp) -> Option<(Fp, Vec2)> {
-        unsafe { circle_poly_sweep(b1, &su1.circle, b2, &su2.poly, t) }
-    }
-    fn aabb_circle_sweep_inter(b1: &Body, su1: &ShapeUnion, b2: &Body, su2: &ShapeUnion, t: Fp) -> Option<(Fp, Vec2)> {
-        unsafe { circle_aabb_sweep(b2, &su2.circle, b1, &su1.aabb, t).map(|r| (r.0, -r.1)) }
-    }
-    fn aabb_poly_sweep_inter(b1: &Body, su1: &ShapeUnion, b2: &Body, su2: &ShapeUnion, t: Fp) -> Option<(Fp, Vec2)> {
-        unsafe { aabb_poly_sweep(b1, &su1.aabb, b2, &su2.poly, t) }
-    }
-    fn poly_circle_sweep_inter(b1: &Body, su1: &ShapeUnion, b2: &Body, su2: &ShapeUnion, t: Fp) -> Option<(Fp, Vec2)> {
-        unsafe { circle_poly_sweep(b2, &su2.circle, b1, &su1.poly, t).map(|r| (r.0, -r.1)) }
-    }
-    fn poly_aabb_sweep_inter(b1: &Body, su1: &ShapeUnion, b2: &Body, su2: &ShapeUnion, t: Fp) -> Option<(Fp, Vec2)> {
-        unsafe { aabb_poly_sweep(b2, &su2.aabb, b1, &su1.poly, t).map(|r| (r.0, -r.1)) }
-    }
 
-    type InterSweep = fn(&Body, &ShapeUnion, &Body, &ShapeUnion, Fp) -> Option<(Fp, Vec2)>;
-    const SHAPE_JUMP_TABLE: [[InterSweep; 3]; 3] = [
-        [circle_circle_sweep_inter, circle_aabb_sweep_inter, circle_poly_sweep_inter],
-        [aabb_circle_sweep_inter, aabb_aabb_sweep_inter, aabb_poly_sweep_inter],
-        [poly_circle_sweep_inter, poly_aabb_sweep_inter, poly_poly_sweep_inter],
-    ];
+    // Safety: functions in jump table are decided by associated ids, each function is called only when union types are correct
+    const SHAPE_JUMP_TABLE: [[fn(&Body, &ShapeUnion, &Body, &ShapeUnion, Fp) -> Option<(Fp, Vec2)>; 3]; 3] = [
+        [
+            |b1: &Body, su1: &ShapeUnion, b2: &Body, su2: &ShapeUnion, t: Fp| unsafe { 
+                circle_circle_sweep(b1, &su1.circle, b2, &su2.circle, t) },
+            |b1: &Body, su1: &ShapeUnion, b2: &Body, su2: &ShapeUnion, t: Fp| unsafe { 
+                circle_aabb_sweep(b1, &su1.circle, b2, &su2.aabb, t) },
+            |b1: &Body, su1: &ShapeUnion, b2: &Body, su2: &ShapeUnion, t: Fp| unsafe { 
+                circle_poly_sweep(b1, &su1.circle, b2, &su2.poly, t) },
+        ], [
+            |b1: &Body, su1: &ShapeUnion, b2: &Body, su2: &ShapeUnion, t: Fp| unsafe { 
+                circle_aabb_sweep(b2, &su2.circle, b1, &su1.aabb, t).map(|r| (r.0, -r.1)) },
+            |b1: &Body, su1: &ShapeUnion, b2: &Body, su2: &ShapeUnion, t: Fp| unsafe { 
+                aabb_aabb_sweep(b1, &su1.aabb, b2, &su2.aabb, t) },
+            |b1: &Body, su1: &ShapeUnion, b2: &Body, su2: &ShapeUnion, t: Fp| unsafe { 
+                aabb_poly_sweep(b1, &su1.aabb, b2, &su2.poly, t) },
+        ], [
+            |b1: &Body, su1: &ShapeUnion, b2: &Body, su2: &ShapeUnion, t: Fp| unsafe { 
+                circle_poly_sweep(b2, &su2.circle, b1, &su1.poly, t).map(|r| (r.0, -r.1)) },
+            |b1: &Body, su1: &ShapeUnion, b2: &Body, su2: &ShapeUnion, t: Fp| unsafe { 
+                aabb_poly_sweep(b2, &su2.aabb, b1, &su1.poly, t).map(|r| (r.0, -r.1)) },
+            |b1: &Body, su1: &ShapeUnion, b2: &Body, su2: &ShapeUnion, t: Fp| unsafe { 
+                poly_poly_sweep(b1, &su1.poly, b2, &su2.poly, t) },
+        ]];
 
     // runtime:
     let s1s = &b1.shapes[s1];
@@ -843,7 +833,7 @@ mod tests {
         let poly = Poly::new(&[Vec2::new(0.0, 0.0), Vec2::new(1.0, 1.0), Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0)]);
         let b1 = Body { aabb: poly.aabb, shapes: vec![Shape::poly(poly)], pos: Vec2::new(0.0, 0.0), vel: Vec2::new(1.0, 1.0), bullet: false };
         let aabb = Aabb::new(0.0, 0.0, 1.0, 1.0).translate(Vec2::new(2.0, 1.0));
-        let b2 = Body { aabb: aabb, shapes: vec![Shape::aabb(aabb)], pos: Vec2::new(0.2, -0.5), vel: Vec2::new(-1.0, 0.0), bullet: false };
+        let b2 = Body { aabb, shapes: vec![Shape::aabb(aabb)], pos: Vec2::new(0.2, -0.5), vel: Vec2::new(-1.0, 0.0), bullet: false };
 
         assert_eq!(body_sweep(&b1, &b2, 1.0).is_some(), true);
     }

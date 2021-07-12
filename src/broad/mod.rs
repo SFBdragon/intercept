@@ -1,9 +1,9 @@
 pub mod reacter;
 
-use crate::{*, prelude::narrow::*};
+use crate::{*, prelude::narrow::*, narrow::Intersect};
 use self::reacter::Reacter;
 use fnv::{FnvBuildHasher, FnvHashMap, FnvHashSet};
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use std::{cmp::Ordering, fmt::Debug, mem::ManuallyDrop};
 
 
@@ -112,6 +112,7 @@ impl Collider {
     }
 }
 
+/// The data type that handles the broadphase and manipulation of it (the equivalent of a Box2d World). 
 #[derive(Debug)]
 pub struct Plane {
     id_counter: usize,
@@ -123,20 +124,19 @@ pub struct Plane {
     require_resort: bool,
 
     // the x axis is chosen to be the discrimination axis due to (handling a row of columns most efficiently):
-    //    1. it is the most 'primitave' axis
-    //    2. screens/viewports are usually wider than they are tall
-    //    3. game worlds are usually wider than they are tall
-    //    4. Character/humanoid hitboxes are usually taller than they are wide, and next to each other
+    //  1. it is the most 'primitive' axis
+    //  2. screens/viewports are usually wider than they are tall
+    //  3. game worlds are usually wider than they are tall
+    //  4. Character/humanoid hitboxes are usually taller than they are wide, and next to each other
     be_list: Vec<(bool, usize, Fp)>,
+    epsilon: Fp,
 }
 
-impl Default for Plane {
-    fn default() -> Self {
-        Plane::new()
-    }
-}
 impl Plane {
-    pub fn new() -> Plane {
+    pub fn new(epsilon: Fp) -> Plane {
+        //! The epsilon defines the small gap maintained between colliders to guard against tunneling due to floating point error.
+        //! Make it small enough so that the gaps are not noticeable, but large enough that tunneling does not occur.
+        //! `0.01` to `0.05` should work fine for some *pixel = 1.0* scales, reduce by a few orders of magnitude for *meter = 1.0* scales.
         Plane {
             id_counter: 0,
             table: FnvHashMap::default(),
@@ -145,6 +145,7 @@ impl Plane {
             require_recalc: true,
             require_resort: true,
             be_list: Vec::new(),
+            epsilon,
         }
     }
 
@@ -187,7 +188,7 @@ impl Plane {
     pub unsafe fn get_collider_mut_silent(&mut self, id: usize) -> &mut Collider {
         //! This version does not flag the broadphase as requiring recalculation.
         //! # Safety
-        //! Do not mutate the collider's velocity, position, or shapes, else unexpected/incorrect behaviour when the broadphase is invoked may occur.
+        //! Mutating the collider's velocity, position, or shapes may cause unexpected/incorrect behaviour when the broadphase is invoked.
         //! # Panics
         //! Panics if a collider with the specified ID does not exist.
 
@@ -198,6 +199,7 @@ impl Plane {
 
     pub fn add_collider(&mut self, c: Collider) -> usize {
         //! Queues a collider for incorporation into the broadphase.
+
         self.id_counter += 1;
         self.table.insert(self.id_counter, c);
         if self.adds.is_none() {
@@ -208,38 +210,51 @@ impl Plane {
     pub fn remove_collider(&mut self, id: usize) {
         //! Queues a collider for removal from the broadphase.
         //! # Panics
-        //! Panics if a collider with the specified ID does not exist. 
-        //! This may be due to the ID being incorrect, the collider having been removed, or the collider has not been incorporated into the broadphase yet.
-        //! Incorporation is performed by `Plane::update(&mut self)`.
+        //! Panics if a collider with the specified ID does not exist. Removing a collider that's in queue to be incorporated is allowed.
 
-        self.rems.insert(id);
         if self.table.remove(&id).is_none() {
             panic!("Plane does not contain the collider with the specified ID."); 
-        };
+        }
+        self.rems.insert(id);
     }
 
-    pub fn line_query(&self, a: Vec2, b: Vec2, callback: &dyn Fn(usize, &Collider, Fp) -> bool) {
-        //! Invokes the callback for each Collider the aabb intersects with until no more intersections or the callback `(id, collider, coeff a->b)` returns false. <br>
-        //! Requires that the broadphase be unflagged for recalculation and re-sorting.
-
-        assert!(!self.require_recalc && !self.require_resort, "Ensure b & e values have been recalculated and re-sorted.");
-
-        let aabb = Aabb::new_safe(a.x, a.y, b.x, b.y);
-        let mut active = FnvHashSet::default();
+    // maybe sweep & sweep_between should only return Iterator<Item=usize>?
+    #[inline]
+    pub fn sweep(&self, left: Fp, right: Fp) -> IndexSet<usize, FnvBuildHasher> {
+        let mut active = IndexSet::<usize, FnvBuildHasher>::with_hasher(FnvBuildHasher::default());
         for val in self.be_list.iter() {
-            if val.2 < aabb.min.x {
+            if val.2 < left {
                 match val.0 {
                     false => { active.insert(val.1); }
                     true => { active.remove(&val.1); }
                 }
-            } else if val.2 > aabb.max.x {
+            } else if val.2 > right {
                 active.insert(val.1);
             } else {
                 break;
             }
         }
+        active
+    }
+    #[inline]
+    pub fn sweep_between(&self, x1: Fp, x2: Fp) -> IndexSet<usize, FnvBuildHasher> {
+        //! Invokes `sweep`, ordering `x1` and `x2` into `left` and `right` parameters.
+        if x1 <= x2 {
+            self.sweep(x1, x2)
+        } else {
+            self.sweep(x2, x1)
+        }
+    }
+    
+    pub fn line_query<F: FnMut(usize, &Collider, Fp) -> bool>(&self, a: Vec2, b: Vec2, mut callback: F) {
+        //! Invokes the callback for each Collider the aabb intersects with until no more intersections or the callback 
+        //! (params = `(id, collider, coeff a->b)`) returns false. <br>
+        //! Requires that the broadphase be unflagged for recalculation and re-sorting.
 
-        for id in active {
+        assert!(!self.require_recalc && !self.require_resort, "Ensure b & e values have been recalculated and re-sorted.");
+
+        let aabb = Aabb::new_safe(a.x, a.y, b.x, b.y);
+        for id in self.sweep(a.x, a.y) {
             let c = self.get_collider(id);
             if c.body.aabb.aabb_test(&aabb) {
                 if let Some(r) = c.body.line_query(a, b) {
@@ -250,37 +265,52 @@ impl Plane {
             }
         }
     }
-    pub fn aabb_query(&self, aabb: Aabb, callback: &dyn Fn(usize, &Collider) -> bool) {
-        //! Invokes the callback for each Collider the aabb intersects with until no more intersections or the callback `(id, collider)` returns false. <br>
-        //! Requires that the broadphase be unflagged for recalculation and resorting.
+    pub fn line_query_mut<F: FnMut(usize, &mut Collider, Fp) -> bool>(&mut self, a: Vec2, b: Vec2, mut callback: F) {
+        //! Invokes the callback for each Collider the aabb intersects with until no more intersections or the callback 
+        //! (params = `(id, collider, coeff a->b)`) returns false. <br>
+        //! Requires that the broadphase be unflagged for recalculation and re-sorting.
+
         assert!(!self.require_recalc && !self.require_resort, "Ensure b & e values have been recalculated and re-sorted.");
 
-        let mut active = FnvHashSet::default();
-        for val in self.be_list.iter() {
-            if val.2 < aabb.min.x {
-                match val.0 {
-                    false => {
-                        let _ = active.insert(val.1);
-                    }
-                    true => {
-                        let _ = active.remove(&val.1);
+        let aabb = Aabb::new_safe(a.x, a.y, b.x, b.y);
+        for id in self.sweep(aabb.min.x, aabb.max.x) {
+            let c = self.get_collider_mut(id);
+            if c.body.aabb.aabb_test(&aabb) {
+                if let Some(r) = c.body.line_query(a, b) {
+                    if !callback(id, c, r) {
+                        break;
                     }
                 }
-            } else if val.2 > aabb.max.x {
-                active.insert(val.1);
-            } else {
-                break;
             }
         }
+    }
+    pub fn aabb_query<F: FnMut(usize, &Collider) -> bool>(&self, aabb: Aabb, mut callback: F) {
+        //! Invokes the callback for each Collider the aabb intersects with until no more intersections or the callback `(id, collider)` returns false. <br>
+        //! Requires that the broadphase be unflagged for recalculation and resorting.
 
-        for id in active {
+        assert!(!self.require_recalc && !self.require_resort, "Ensure b & e values have been recalculated and re-sorted.");
+
+        for id in self.sweep(aabb.min.x, aabb.max.x) {
             let c = self.get_collider(id);
             if c.body.aabb.aabb_test(&aabb) && !callback(id, c) {
                 return;
             }
         }
     }
+    pub fn aabb_query_mut<F: FnMut(usize, &mut Collider) -> bool>(&mut self, aabb: Aabb, mut callback: F) {
+        //! Invokes the callback for each Collider the aabb intersects with until no more intersections or the callback `(id, collider)` returns false. <br>
+        //! Requires that the broadphase be unflagged for recalculation and resorting.
 
+        assert!(!self.require_recalc && !self.require_resort, "Ensure b & e values have been recalculated and re-sorted.");
+
+        for id in self.sweep(aabb.min.x, aabb.max.x) {
+            let c = self.get_collider_mut(id);
+            if c.body.aabb.aabb_test(&aabb) && !callback(id, c) {
+                return;
+            }
+        }
+    }
+    
     pub fn recalc_be_vals(&mut self) {
         //! Update `Body`s prior. Does not process Collider adds and removals; use `self.incorporate(..)` instead. <br>
         //! Flags the broadphase for requiring re-sorting. Unflags the broadphase for requiring recalculation.
@@ -300,10 +330,12 @@ impl Plane {
         //! Unflags the broadphase for requiring resorting.
         assert!(!self.require_recalc, "Broadphase is flagged for requiring recalculation, will not sort out-of-date data.");
 
-        // sort b & e values
-        // insertion sort due to its adaptivity & efficiency: sort is expected to be mostly sorted due to temporal cohesion
-        let len = self.be_list.len();
-        insertion_be(&mut self.be_list, 0, len - 1);
+        if self.be_list.len() >= 2 {
+            // sort b & e values
+            // insertion sort due to its adaptivity & efficiency: sort is expected to be mostly sorted due to temporal cohesion
+            let len = self.be_list.len();
+            insertion_be(&mut self.be_list, 0, len - 1);
+        }
         self.require_resort = false;
     }
     pub fn update(&mut self) {
@@ -321,20 +353,12 @@ impl Plane {
         // Create list for added b & e values. This may be a candidate for parallelization?
         if let Some(id) = self.adds {
             // create new b & e values
-            let add_len = (self.id_counter - id) * 2; // gives the quantity of bodies added * 2
+            let add_len = (self.id_counter - id + 1) * 2; // gives the quantity of bodies added * 2
             let mut add = Vec::with_capacity(add_len);
             for i in id..self.id_counter {
                 if let Some(c) = self.table.get(&i) {
-                    add.push((
-                        false,
-                        i,
-                        Fp::min(c.body.aabb.min.x, c.body.aabb.min.x + c.body.vel.x),
-                    ));
-                    add.push((
-                        false,
-                        i,
-                        Fp::max(c.body.aabb.max.x, c.body.aabb.max.x + c.body.vel.x),
-                    ));
+                    add.push((false, i, Fp::min(c.body.aabb.min.x, c.body.aabb.min.x + c.body.vel.x)));
+                    add.push((false, i, Fp::max(c.body.aabb.max.x, c.body.aabb.max.x + c.body.vel.x)));
                 }
             }
             // sort new b & e values
@@ -349,15 +373,17 @@ impl Plane {
                 }
             });
 
-            let mut new_be_list =
-                Vec::with_capacity(self.be_list.len() + add_len - self.rems.len());
+            let mut new_be_list = Vec::with_capacity(self.be_list.len() + add_len - self.rems.len());
             let mut old_index = 0;
             let mut add_index = 0;
             if !self.rems.is_empty() {
                 // If removals as well as additions must be accounted for.
                 for _ in 0..new_be_list.len() {
                     if self.be_list[old_index].2 > add[add_index].2 {
-                        new_be_list.push(add[add_index]);
+                        // A collider may be added and removed before an update occurs and must be handled correctly.
+                        if !self.rems.contains(&add[add_index].1) {
+                            new_be_list.push(add[add_index]);
+                        }
                         add_index += 1;
                     } else {
                         if !self.rems.contains(&self.be_list[old_index].1) {
@@ -390,9 +416,10 @@ impl Plane {
         }
 
         self.adds = None;
-        self.rems = FnvHashSet::default();
+        self.rems.clear();
     }
 
+    #[inline]
     fn reposition_val(&mut self, index: usize, x: Fp) {
         let old_val = self.be_list[index];
         let mut j = index;
@@ -409,7 +436,7 @@ impl Plane {
         }
         self.be_list[j] = (old_val.0, old_val.1, x);
     }
-    pub fn sweep_and_prune(&mut self, t: Fp, epsilon: Fp) {
+    pub fn step(&mut self, t: Fp) {
         //! Performs a [sweep and prune](https://en.wikipedia.org/wiki/Sweep_and_prune) broadphase algorithm implementation. 
 
         if self.require_recalc || self.require_resort || self.adds.is_some() || !self.rems.is_empty() {
@@ -491,12 +518,12 @@ impl Plane {
                         // Modify c1 in response to the collision.
                         let c1 = self.table.get_mut(&id1).expect("");
                         if !c2_is_static {
-                            (c1.trigger)(id1, id2, data.travel * t, data, epsilon);
+                            (c1.trigger)(id1, id2, data.travel * t, data, self.epsilon);
                         } else if c1.is_static {
                             c1.remainder = 1.0 - data.travel; // c1.remainder == 1.0
-                            c1.body.translate(c1.body.vel * (t * data.travel) + data.norm * epsilon);
+                            c1.body.translate(c1.body.vel * (t * data.travel) + data.norm * self.epsilon);
                             let vel = unsafe {
-                                (*c1.ctu.reacter).react(c1.body.vel, id1, id2, data, epsilon)
+                                (*c1.ctu.reacter).react(c1.body.vel, id1, id2, data, self.epsilon)
                             };
                             c1.body.vel += vel + c2_vel_add;
                             let broad = c1.body.get_broad();
@@ -626,12 +653,12 @@ impl Plane {
 
                             // Modify c1 in response to the collision.
                             if !c2_is_static {
-                                (c1.trigger)(id1, id2, data.travel * t, data, epsilon);
+                                (c1.trigger)(id1, id2, data.travel * t, data, self.epsilon);
                             } else if c1.is_static {
                                 c1.remainder -= data.travel;
-                                c1.body.translate(c1.body.vel * (t * data.travel) + data.norm * epsilon);
+                                c1.body.translate(c1.body.vel * (t * data.travel) + data.norm * self.epsilon);
                                 let vel = unsafe {
-                                    (*c1.ctu.reacter).react(c1.body.vel, id1, id2, data, epsilon)
+                                    (*c1.ctu.reacter).react(c1.body.vel, id1, id2, data, self.epsilon)
                                 };
                                 c1.body.vel += vel + c2_vel_add;
                                 let broad = c1.body.get_broad();
@@ -659,8 +686,96 @@ impl Plane {
         self.require_recalc = false;
         self.require_resort = false;
     }
+}
 
-/* pub fn get_be_list_indecies(&self, id: usize, minx: Fp, maxx: Fp) -> (usize, usize) {
+
+// code based off of https://en.wikipedia.org/wiki/Insertion_sort#Algorithm
+#[inline]
+fn insertion_be(a: &mut Vec<(bool, usize, Fp)>, lo: usize, hi: usize) {
+    for i in (lo + 1)..hi {
+        let val = a[i];
+        let mut j = i;
+        while j != 0 && a[j - 1].2 > val.2 {
+            a[j] = a[j - 1];
+            j -= 1;
+        }
+        a[j] = val;
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+
+    #[test]
+    fn plane_col_test() {
+        let mut plane = Plane::new(0.01);
+        let col1 = Collider::new_static(
+            Body::new(vec![Aabb::new(-0.5, -0.5, 0.5, 0.5).into()], Vec2::splat(0.5), Vec2::X, false), 
+            true);
+
+        let id = plane.add_collider(col1);
+        assert_eq!(plane.adds, Some(1));
+        assert_eq!(plane.rems.is_empty(), true);
+        plane.remove_collider(id);
+        assert_eq!(plane.adds, Some(1));
+        assert_eq!(plane.rems.is_empty(), false);
+        plane.update();
+        assert_eq!(plane.adds, None);
+        assert_eq!(plane.rems.is_empty(), true);
+        assert_eq!(plane.table.is_empty(), true);
+
+        let col2 = Collider::new_static(
+            Body::new(vec![Aabb::new(-0.5, -0.5, 0.5, 0.5).into()], Vec2::splat(0.5), Vec2::X, false), 
+            true);
+        let id = plane.add_collider(col2);
+        plane.update();
+        assert_eq!(plane.adds, None);
+        assert_eq!(plane.rems.is_empty(), true);
+        assert_eq!(plane.table.is_empty(), false);
+        plane.step(1.0);
+        let col2r = plane.get_collider(id);
+        assert_eq!(col2r.body.pos, Vec2::new(1.5, 0.5));
+    }
+    
+    fn setup_test_plane() -> Plane {
+        let mut plane = Plane::new(0.005);
+        plane.add_collider(Collider::new_static(Body::new(
+            vec![Aabb::new(-0.5, -0.5, 0.5, 0.5).into()], Vec2::splat(0.5), Vec2::X, false), true));
+        plane.add_collider(Collider::new_static(Body::new(
+            vec![Circle::new(10.0, 5.0, 5.0).into()], Vec2::splat(0.5), -Vec2::Y, true), true));
+        plane.add_collider(Collider::new_static(Body::new(
+            vec![Poly::new(&[Vec2::new(-1.0, -1.0), Vec2::new(-1.0, -2.0), Vec2::new(5.0, -1.0)]).into(), 
+                Poly::new(&[Vec2::new(-1.0, -2.0), Vec2::new(5.0, -2.0), Vec2::new(5.0, -1.0)]).into()], 
+            Vec2::splat(0.5), Vec2::ZERO, false), true));
+        plane
+    }
+
+    #[test]
+    fn plane_query_test() {
+        let mut plane = setup_test_plane();
+
+        //let vec: Vec;
+        //vec.into_iter().map(f);
+
+        assert!(plane.sweep(-2.0, -1.1).is_empty());
+        assert_eq!(plane.sweep(1.0, 2.0).len(), 2);
+        plane.aabb_query(Aabb::new(0.0, 0.0, 3.0, 3.0), |id, _| id == 2);
+    }
+
+    #[test]
+    fn plane_step_test() {
+        let mut plane = setup_test_plane();
+
+        todo!();
+    }
+}
+
+
+
+/*  fn get_be_list_indecies(&self, id: usize, minx: Fp, maxx: Fp) -> (usize, usize) {
         //! Binary searches be_list for the b & e values belonging to the id provided.
         //! Returns indecies of `(b, e)`, or `(usize::MAX, usize::MAX)` if minx and maxx aren't found. <br>
         //! Ensure be_list is sorted.
@@ -696,38 +811,3 @@ impl Plane {
         }
         lo
     }*/
-}
-
-// ---------- Sorting Algorithms ---------- //
-
-// code based off of https://en.wikipedia.org/wiki/Insertion_sort#Algorithm
-#[inline]
-fn insertion_be(a: &mut Vec<(bool, usize, Fp)>, lo: usize, hi: usize) {
-    for i in (lo + 1)..hi {
-        let val = a[i];
-        let mut j = i;
-        while j != 0 && a[j - 1].2 > val.2 {
-            a[j] = a[j - 1];
-            j -= 1;
-        }
-        a[j] = val;
-    }
-}
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn broad_intgr_test() {
-        let mut plane = Plane::default();
-        let col1 = Collider::new_static(
-            Body::new(vec![Aabb::new(-0.5, -0.5, 0.5, 0.5).into()], Vec2::splat(0.5), Vec2::X, false), 
-            true);
-
-        plane.add_collider(col1);
-
-        todo!();
-    }
-}

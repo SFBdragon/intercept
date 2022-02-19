@@ -1,6 +1,8 @@
 # intercept
 
-An under-development, nonrotational, 2D collision library intended for use in game projects.   
+### Warning: unmaintained, not properly tested, etc.
+
+A nonrotational, 2D collision library intended for use in game projects.   
 Includes both a broadphase and narrow phase, with intersection and line segment testing between and against AABBs, circles, and convex polygons.   
 The broadphase uses continuous collision detection and a Sweep & Prune broadphase implementation, with customisable collision resolutions and triggers.   
 

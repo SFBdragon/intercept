@@ -221,14 +221,15 @@ impl Plane {
     // maybe sweep & sweep_between should only return Iterator<Item=usize>?
     #[inline]
     pub fn sweep(&self, left: Fp, right: Fp) -> IndexSet<usize, FnvBuildHasher> {
-        let mut active = IndexSet::<usize, FnvBuildHasher>::with_hasher(FnvBuildHasher::default());
+        let mut active = IndexSet::with_hasher(FnvBuildHasher::default());
         for val in self.be_list.iter() {
             if val.2 < left {
-                match val.0 {
-                    false => { active.insert(val.1); }
-                    true => { active.remove(&val.1); }
+                if val.0 {
+                    active.remove(&val.1);
+                } else {
+                    active.insert(val.1);
                 }
-            } else if val.2 > right {
+            } else if val.2 < right {
                 active.insert(val.1);
             } else {
                 break;
@@ -355,22 +356,21 @@ impl Plane {
             // create new b & e values
             let add_len = (self.id_counter - id + 1) * 2; // gives the quantity of bodies added * 2
             let mut add = Vec::with_capacity(add_len);
-            for i in id..self.id_counter {
+            for i in id..=self.id_counter {
                 if let Some(c) = self.table.get(&i) {
                     add.push((false, i, Fp::min(c.body.aabb.min.x, c.body.aabb.min.x + c.body.vel.x)));
-                    add.push((false, i, Fp::max(c.body.aabb.max.x, c.body.aabb.max.x + c.body.vel.x)));
+                    add.push((true , i, Fp::max(c.body.aabb.max.x, c.body.aabb.max.x + c.body.vel.x)));
                 }
             }
             // sort new b & e values
             // there are no gaurantees as to order, thus pattern-attacking quicksort is ideal
-            self.be_list.sort_unstable_by(|x, y| -> Ordering {
-                if x.2 > y.2 {
-                    Ordering::Less
-                } else if x.2 < y.2 {
-                    Ordering::Greater
-                } else {
-                    Ordering::Equal
-                }
+            add.sort_unstable_by(|x, y| -> Ordering {
+                // Fp::total_cmp impl, NaNs here shouldn't be defined behaviour anyway so the Tier 2 issues can be ignored.
+                let mut left = x.2.to_bits() as i32;
+                let mut right = y.2.to_bits() as i32;
+                left ^= (((left >> 31) as u32) >> 1) as i32;
+                right ^= (((right >> 31) as u32) >> 1) as i32;
+                left.cmp(&right)
             });
 
             let mut new_be_list = Vec::with_capacity(self.be_list.len() + add_len - self.rems.len());
@@ -395,7 +395,7 @@ impl Plane {
             } else {
                 // If only additions must be accounted for.
                 for _ in 0..new_be_list.len() {
-                    if self.be_list[old_index].2 > add[add_index].2 {
+                    if self.be_list.get(old_index).unwrap_or(&(false, 0, Fp::INFINITY)).2 > add[add_index].2 {
                         new_be_list.push(add[add_index]);
                         add_index += 1;
                     } else {
@@ -404,6 +404,7 @@ impl Plane {
                     }
                 }
             }
+            self.be_list = new_be_list;
         } else if !self.rems.is_empty() {
             // If only removals are in order. Else, no action required.
             let mut new_be_list = Vec::with_capacity(self.be_list.len() - self.rems.len());
@@ -756,6 +757,7 @@ mod tests {
     #[test]
     fn plane_query_test() {
         let mut plane = setup_test_plane();
+        plane.update();
 
         //let vec: Vec;
         //vec.into_iter().map(f);

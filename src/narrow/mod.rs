@@ -10,6 +10,7 @@ use std::{fmt::{Debug, Formatter}, mem::ManuallyDrop};
 #[inline]
 pub fn colinearity_test(a: Vec2, b: Vec2, c: Vec2) -> bool {
     //! Returns whether all three points are colinear.
+    // todo: test (b.y - a.y) / (b.x - a.x) == (b.y - c.y) / (b.x / c.x)
     let ba = a - b;
     let cb = b - c;
     ba.perp_dot(cb) == 0.0 && ba.dot(cb) > 0.0 // fixme: fp cmp
